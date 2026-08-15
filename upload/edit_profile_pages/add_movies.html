@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script>window.alert=function(){};</script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Movies</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+        }
+        .search-container {
+            background-color: #f0f2f5;
+            border-radius: 20px;
+        }
+        .movie-item {
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+        }
+        .movie-item:active {
+            background-color: #f0f2f5;
+        }
+        .movie-image {
+            width: 48px;
+            height: 64px;
+            border-radius: 6px;
+            object-fit: cover;
+            flex-shrink: 0;
+            background-color: #e4e6eb;
+        }
+        .movie-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .movie-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin: 0;
+        }
+        .movie-meta {
+            font-size: 12px;
+            color: #65676b;
+            margin: 2px 0 0 0;
+        }
+        .add-btn {
+            color: #9ca3af;
+            font-size: 20px;
+            cursor: pointer;
+            transition: color 0.2s;
+            border: none;
+            background: none;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .add-btn:hover {
+            color: #4b5563;
+        }
+        .add-btn.active {
+            color: #0a66c2;
+        }
+        .selected-count {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #0a66c2;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            display: none;
+        }
+        .selected-count.show {
+            display: block;
+        }
+        .page {
+            display: none;
+        }
+        .page.active {
+            display: block;
+        }
+        .movie-tag {
+            display: inline-block;
+            background-color: #f0f2f5;
+            padding: 6px 10px;
+            border-radius: 16px;
+            margin: 3px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .movie-tag .remove-btn {
+            margin-left: 6px;
+            cursor: pointer;
+            color: #65676b;
+        }
+        .movie-tag .remove-btn:hover {
+            color: #000;
+        }
+        .add-more-btn {
+            width: 100%;
+            background-color: #f0f2f5;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .add-more-btn:hover {
+            background-color: #e4e6eb;
+        }
+        .save-btn {
+            width: 100%;
+            background-color: #1878F3;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            position: fixed;
+            bottom: 16px;
+            left: 16px;
+            right: 16px;
+            max-width: calc(100% - 32px);
+        }
+        .save-btn:hover {
+            background-color: #0d5ecf;
+        }
+        .movies-container {
+            padding-bottom: 80px;
+        }
+        .movies-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+    </style>
+
+</head>
+<body class="max-w-md mx-auto min-h-screen pb-20">
+    <!-- Add Movies Page -->
+    <div id="add-movies-page" class="page active">
+        <!-- Header -->
+        <header class="p-4 flex items-center justify-between">
+            <div class="flex items-center">
+                <button class="text-2xl mr-4">
+                    <i class="fa-solid fa-chevron-left"></i>
+                </button>
+                <h1 class="text-2xl font-bold">Add movies</h1>
+            </div>
+            <button id="done-btn" class="text-lg font-bold text-blue-600 hover:text-blue-700">
+                Done
+            </button>
+        </header>
+
+        <!-- Search Bar -->
+        <div class="px-4 mb-6">
+            <div class="search-container flex items-center px-4 py-2">
+                <i class="fa-solid fa-magnifying-glass text-gray-500 mr-3"></i>
+                <input 
+                    type="text" 
+                    id="search-input"
+                    placeholder="Search movies" 
+                    class="bg-transparent border-none outline-none w-full text-lg placeholder-gray-500"
+                >
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="px-4">
+            <div id="movies-list" class="movies-list"></div>
+        </div>
+
+        <!-- Selected Count Badge -->
+        <div id="selected-count" class="selected-count">
+            <span id="count-text">0 selected</span>
+        </div>
+    </div>
+
+    <!-- Movies Confirmation Page -->
+    <div id="movies-page" class="page">
+        <!-- Header -->
+        <header class="p-4 flex items-center justify-between">
+            <button id="close-btn" class="text-2xl">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            <h1 class="text-2xl font-bold">Movies</h1>
+            <div style="width: 24px;"></div>
+        </header>
+
+        <!-- Add More Button -->
+        <div class="px-4 mb-6">
+            <button id="add-more-btn" class="add-more-btn">
+                <i class="fa-solid fa-plus"></i>
+                Add more
+            </button>
+        </div>
+
+        <!-- Movies Display -->
+        <div class="px-4 movies-container" id="movies-display">
+            <!-- Selected movies will be displayed here -->
+        </div>
+
+        <!-- Save Button -->
+        <button id="save-btn" class="save-btn">Save</button>
+    </div>
+
+    <script>
+        const moviesList = document.getElementById('movies-list');
+        const searchInput = document.getElementById('search-input');
+        const selectedCountBadge = document.getElementById('selected-count');
+        const countText = document.getElementById('count-text');
+        const addMoviesPage = document.getElementById('add-movies-page');
+        const moviesPage = document.getElementById('movies-page');
+        const moviesDisplay = document.getElementById('movies-display');
+        
+        let selectedMovies = new Set();
+        let allMovies = [];
+        let trendingMovies = [];
+
+        // 500+ Popular movies with genres and years
+        const moviesData = [
+            // Blockbusters & Action
+            { name: "Avatar", genre: "Sci-Fi", year: "2009" },
+            { name: "Avatar The Way of Water", genre: "Sci-Fi", year: "2022" },
+            { name: "Titanic", genre: "Drama", year: "1997" },
+            { name: "The Avengers", genre: "Action", year: "2012" },
+            { name: "Avengers Endgame", genre: "Action", year: "2019" },
+            { name: "Avengers Infinity War", genre: "Action", year: "2018" },
+            { name: "Iron Man", genre: "Action", year: "2008" },
+            { name: "Captain America Civil War", genre: "Action", year: "2016" },
+            { name: "Thor Ragnarok", genre: "Action", year: "2017" },
+            { name: "Guardians of the Galaxy", genre: "Action", year: "2014" },
+            { name: "Doctor Strange", genre: "Action", year: "2016" },
+            { name: "Black Panther", genre: "Action", year: "2018" },
+            { name: "Spider-Man No Way Home", genre: "Action", year: "2021" },
+            { name: "Ant-Man", genre: "Action", year: "2015" },
+            { name: "Black Widow", genre: "Action", year: "2021" },
+            { name: "Eternals", genre: "Action", year: "2021" },
+            { name: "Shang-Chi", genre: "Action", year: "2021" },
+            { name: "The Dark Knight", genre: "Action", year: "2008" },
+            { name: "The Dark Knight Rises", genre: "Action", year: "2012" },
+            { name: "Batman Begins", genre: "Action", year: "2005" },
+            { name: "Superman", genre: "Action", year: "1978" },
+            { name: "Man of Steel", genre: "Action", year: "2013" },
+            { name: "Wonder Woman", genre: "Action", year: "2017" },
+            { name: "Aquaman", genre: "Action", year: "2018" },
+            { name: "The Flash", genre: "Action", year: "2023" },
+            { name: "Justice League", genre: "Action", year: "2017" },
+            { name: "Fast Five", genre: "Action", year: "2011" },
+            { name: "Furious 7", genre: "Action", year: "2015" },
+            { name: "The Fate of the Furious", genre: "Action", year: "2017" },
+            { name: "Fast X", genre: "Action", year: "2023" },
+            { name: "Mission Impossible", genre: "Action", year: "1996" },
+            { name: "Mission Impossible Rogue Nation", genre: "Action", year: "2015" },
+            { name: "Mission Impossible Fallout", genre: "Action", year: "2018" },
+            { name: "Mission Impossible Dead Reckoning", genre: "Action", year: "2023" },
+            { name: "Casino Royale", genre: "Action", year: "2006" },
+            { name: "Skyfall", genre: "Action", year: "2012" },
+            { name: "Spectre", genre: "Action", year: "2015" },
+            { name: "No Time to Die", genre: "Action", year: "2021" },
+            { name: "Indiana Jones", genre: "Adventure", year: "1981" },
+            { name: "Indiana Jones Kingdom of the Crystal Skull", genre: "Adventure", year: "2008" },
+            { name: "Indiana Jones Dial of Destiny", genre: "Adventure", year: "2023" },
+            { name: "John Wick", genre: "Action", year: "2014" },
+            { name: "John Wick Chapter 2", genre: "Action", year: "2017" },
+            { name: "John Wick Chapter 3", genre: "Action", year: "2019" },
+            { name: "John Wick Chapter 4", genre: "Action", year: "2023" },
+            { name: "Deadpool", genre: "Action", year: "2016" },
+            { name: "Deadpool 2", genre: "Action", year: "2018" },
+            { name: "Wolverine", genre: "Action", year: "2013" },
+            { name: "X-Men Days of Future Past", genre: "Action", year: "2014" },
+            { name: "Fantastic Four", genre: "Action", year: "2005" },
+            { name: "Daredevil", genre: "Action", year: "2003" },
+            { name: "Die Hard", genre: "Action", year: "1988" },
+            { name: "Die Hard 2", genre: "Action", year: "1990" },
+            { name: "Die Hard with a Vengeance", genre: "Action", year: "1995" },
+            { name: "Live Free or Die Hard", genre: "Action", year: "2007" },
+            { name: "Lethal Weapon", genre: "Action", year: "1987" },
+            { name: "Lethal Weapon 2", genre: "Action", year: "1989" },
+            { name: "Lethal Weapon 3", genre: "Action", year: "1992" },
+            { name: "Lethal Weapon 4", genre: "Action", year: "1998" },
+            { name: "Beverly Hills Cop", genre: "Action", year: "1984" },
+            { name: "Beverly Hills Cop 2", genre: "Action", year: "1987" },
+            { name: "Beverly Hills Cop 3", genre: "Action", year: "1994" },
+            { name: "Terminator 2 Judgment Day", genre: "Action", year: "1991" },
+            { name: "Terminator 3 Rise of the Machines", genre: "Action", year: "2003" },
+            { name: "Terminator Genisys", genre: "Action", year: "2015" },
+            { name: "Predator", genre: "Action", year: "1987" },
+            { name: "Predator 2", genre: "Action", year: "1990" },
+            { name: "Predators", genre: "Action", year: "2010" },
+            { name: "Alien", genre: "Sci-Fi", year: "1979" },
+            { name: "Aliens", genre: "Sci-Fi", year: "1986" },
+            { name: "Alien 3", genre: "Sci-Fi", year: "1992" },
+            { name: "Alien Resurrection", genre: "Sci-Fi", year: "1997" },
+            { name: "Prometheus", genre: "Sci-Fi", year: "2012" },
+            { name: "Alien Covenant", genre: "Sci-Fi", year: "2017" },
+            { name: "RoboCop", genre: "Sci-Fi", year: "1987" },
+            { name: "Total Recall", genre: "Sci-Fi", year: "1990" },
+            { name: "The Running Man", genre: "Action", year: "1987" },
+            { name: "Escape Plan", genre: "Action", year: "2013" },
+            { name: "Rambo", genre: "Action", year: "1982" },
+            { name: "Rambo First Blood Part II", genre: "Action", year: "1985" },
+            { name: "Rambo III", genre: "Action", year: "1988" },
+            { name: "Rambo 2008", genre: "Action", year: "2008" },
+            { name: "Rambo Last Blood", genre: "Action", year: "2019" },
+            
+            // Sci-Fi
+            { name: "Inception", genre: "Sci-Fi", year: "2010" },
+            { name: "Interstellar", genre: "Sci-Fi", year: "2014" },
+            { name: "The Matrix", genre: "Sci-Fi", year: "1999" },
+            { name: "The Matrix Reloaded", genre: "Sci-Fi", year: "2003" },
+            { name: "The Matrix Revolutions", genre: "Sci-Fi", year: "2003" },
+            { name: "The Matrix Resurrections", genre: "Sci-Fi", year: "2021" },
+            { name: "Dune", genre: "Sci-Fi", year: "2021" },
+            { name: "Dune Part Two", genre: "Sci-Fi", year: "2024" },
+            { name: "Star Wars A New Hope", genre: "Sci-Fi", year: "1977" },
+            { name: "The Empire Strikes Back", genre: "Sci-Fi", year: "1980" },
+            { name: "Return of the Jedi", genre: "Sci-Fi", year: "1983" },
+            { name: "The Force Awakens", genre: "Sci-Fi", year: "2015" },
+            { name: "The Last Jedi", genre: "Sci-Fi", year: "2017" },
+            { name: "The Rise of Skywalker", genre: "Sci-Fi", year: "2019" },
+            { name: "Star Trek", genre: "Sci-Fi", year: "2009" },
+            { name: "Star Trek Into Darkness", genre: "Sci-Fi", year: "2013" },
+            { name: "Star Trek Beyond", genre: "Sci-Fi", year: "2016" },
+            { name: "Back to the Future", genre: "Sci-Fi", year: "1985" },
+            { name: "Back to the Future Part II", genre: "Sci-Fi", year: "1989" },
+            { name: "Back to the Future Part III", genre: "Sci-Fi", year: "1990" },
+            { name: "The Time Machine", genre: "Sci-Fi", year: "1960" },
+            { name: "12 Monkeys", genre: "Sci-Fi", year: "1995" },
+            { name: "Edge of Tomorrow", genre: "Sci-Fi", year: "2014" },
+            { name: "Looper", genre: "Sci-Fi", year: "2012" },
+            { name: "Tenet", genre: "Sci-Fi", year: "2020" },
+            { name: "Blade Runner", genre: "Sci-Fi", year: "1982" },
+            { name: "Blade Runner 2049", genre: "Sci-Fi", year: "2017" },
+            { name: "The Fifth Element", genre: "Sci-Fi", year: "1997" },
+            { name: "Elysium", genre: "Sci-Fi", year: "2013" },
+            { name: "District 9", genre: "Sci-Fi", year: "2009" },
+            { name: "Minority Report", genre: "Sci-Fi", year: "2002" },
+            { name: "Oblivion", genre: "Sci-Fi", year: "2013" },
+            { name: "Gravity", genre: "Sci-Fi", year: "2013" },
+            { name: "The Martian", genre: "Sci-Fi", year: "2015" },
+            { name: "Arrival", genre: "Sci-Fi", year: "2016" },
+            { name: "Contact", genre: "Sci-Fi", year: "1997" },
+            { name: "Sphere", genre: "Sci-Fi", year: "1998" },
+            { name: "Armageddon", genre: "Sci-Fi", year: "1998" },
+            { name: "Deep Impact", genre: "Sci-Fi", year: "1998" },
+            { name: "The Day After Tomorrow", genre: "Sci-Fi", year: "2004" },
+            { name: "2012", genre: "Sci-Fi", year: "2009" },
+            { name: "Knowing", genre: "Sci-Fi", year: "2009" },
+            { name: "Battleship", genre: "Sci-Fi", year: "2012" },
+            { name: "Pacific Rim", genre: "Sci-Fi", year: "2013" },
+            { name: "Godzilla", genre: "Sci-Fi", year: "2014" },
+            { name: "Kong Skull Island", genre: "Sci-Fi", year: "2017" },
+            { name: "Godzilla vs Kong", genre: "Sci-Fi", year: "2021" },
+            
+            // Drama
+            { name: "The Shawshank Redemption", genre: "Drama", year: "1994" },
+            { name: "The Godfather", genre: "Drama", year: "1972" },
+            { name: "The Godfather Part II", genre: "Drama", year: "1974" },
+            { name: "The Godfather Part III", genre: "Drama", year: "1990" },
+            { name: "Pulp Fiction", genre: "Drama", year: "1994" },
+            { name: "Forrest Gump", genre: "Drama", year: "1994" },
+            { name: "The Silence of the Lambs", genre: "Drama", year: "1991" },
+            { name: "Goodfellas", genre: "Drama", year: "1990" },
+            { name: "The Departed", genre: "Drama", year: "2006" },
+            { name: "Scarface", genre: "Drama", year: "1983" },
+            { name: "Taxi Driver", genre: "Drama", year: "1976" },
+            { name: "Raging Bull", genre: "Drama", year: "1980" },
+            { name: "Requiem for a Dream", genre: "Drama", year: "2000" },
+            { name: "Trainspotting", genre: "Drama", year: "1996" },
+            { name: "The Wolf of Wall Street", genre: "Drama", year: "2013" },
+            { name: "The Social Network", genre: "Drama", year: "2010" },
+            { name: "Moneyball", genre: "Drama", year: "2011" },
+            { name: "The Big Short", genre: "Drama", year: "2015" },
+            { name: "Margin Call", genre: "Drama", year: "2011" },
+            { name: "Spotlight", genre: "Drama", year: "2015" },
+            { name: "All the President's Men", genre: "Drama", year: "1976" },
+            { name: "The Post", genre: "Drama", year: "2017" },
+            { name: "12 Angry Men", genre: "Drama", year: "1957" },
+            { name: "To Kill a Mockingbird", genre: "Drama", year: "1962" },
+            { name: "Schindler's List", genre: "Drama", year: "1993" },
+            { name: "Saving Private Ryan", genre: "Drama", year: "1998" },
+            { name: "The Pianist", genre: "Drama", year: "2002" },
+            { name: "The Boy in Striped Pajamas", genre: "Drama", year: "2008" },
+            { name: "Jojo Rabbit", genre: "Drama", year: "2019" },
+            { name: "Inglourious Basterds", genre: "Drama", year: "2009" },
+            { name: "Kill Bill Vol 1", genre: "Drama", year: "2003" },
+            { name: "Kill Bill Vol 2", genre: "Drama", year: "2004" },
+            { name: "Django Unchained", genre: "Drama", year: "2012" },
+            { name: "Hateful Eight", genre: "Drama", year: "2015" },
+            { name: "Once Upon a Time in Hollywood", genre: "Drama", year: "2019" },
+            { name: "Reservoir Dogs", genre: "Drama", year: "1992" },
+            { name: "Jackie Brown", genre: "Drama", year: "1997" },
+            { name: "Gladiator", genre: "Drama", year: "2000" },
+            { name: "Braveheart", genre: "Drama", year: "1995" },
+            { name: "Troy", genre: "Drama", year: "2004" },
+            { name: "300", genre: "Drama", year: "2006" },
+            { name: "Ben-Hur", genre: "Drama", year: "1959" },
+            { name: "Spartacus", genre: "Drama", year: "1960" },
+            { name: "Cleopatra", genre: "Drama", year: "1963" },
+            { name: "Lawrence of Arabia", genre: "Drama", year: "1962" },
+            { name: "Doctor Zhivago", genre: "Drama", year: "1965" },
+            { name: "Casablanca", genre: "Drama", year: "1942" },
+            { name: "Citizen Kane", genre: "Drama", year: "1941" },
+            { name: "Vertigo", genre: "Drama", year: "1958" },
+            { name: "Rear Window", genre: "Drama", year: "1954" },
+            { name: "Sunset Boulevard", genre: "Drama", year: "1950" },
+            { name: "Singin in the Rain", genre: "Drama", year: "1952" },
+            { name: "An American in Paris", genre: "Drama", year: "1951" },
+            { name: "The Sound of Music", genre: "Drama", year: "1965" },
+            { name: "West Side Story", genre: "Drama", year: "1961" },
+            { name: "My Fair Lady", genre: "Drama", year: "1964" },
+            { name: "Breakfast at Tiffanys", genre: "Drama", year: "1961" },
+            { name: "Roman Holiday", genre: "Drama", year: "1953" },
+            { name: "Grace of Monaco", genre: "Drama", year: "2014" },
+            { name: "The Princess Diaries", genre: "Drama", year: "2001" },
+            { name: "The Notebook", genre: "Drama", year: "2004" },
+            { name: "La La Land", genre: "Drama", year: "2016" },
+            { name: "The Fault in Our Stars", genre: "Drama", year: "2014" },
+            { name: "Crazy Rich Asians", genre: "Drama", year: "2018" },
+            { name: "Moonlight", genre: "Drama", year: "2016" },
+            { name: "Parasite", genre: "Drama", year: "2019" },
+            { name: "Everything Everywhere All at Once", genre: "Drama", year: "2022" },
+            { name: "CODA", genre: "Drama", year: "2021" },
+            { name: "Nomadland", genre: "Drama", year: "2020" },
+            { name: "Minari", genre: "Drama", year: "2020" },
+            { name: "The Farewell", genre: "Drama", year: "2019" },
+            { name: "Slumdog Millionaire", genre: "Drama", year: "2008" },
+            { name: "127 Hours", genre: "Drama", year: "2010" },
+            
+            // Horror
+            { name: "The Conjuring", genre: "Horror", year: "2013" },
+            { name: "The Conjuring 2", genre: "Horror", year: "2016" },
+            { name: "Insidious", genre: "Horror", year: "2010" },
+            { name: "Insidious Chapter 2", genre: "Horror", year: "2013" },
+            { name: "Insidious Chapter 3", genre: "Horror", year: "2015" },
+            { name: "The Ring", genre: "Horror", year: "2002" },
+            { name: "The Ring Two", genre: "Horror", year: "2005" },
+            { name: "The Grudge", genre: "Horror", year: "2004" },
+            { name: "The Grudge 2", genre: "Horror", year: "2006" },
+            { name: "Ju-On", genre: "Horror", year: "2002" },
+            { name: "The Sixth Sense", genre: "Horror", year: "1999" },
+            { name: "The Shining", genre: "Horror", year: "1980" },
+            { name: "The Exorcist", genre: "Horror", year: "1973" },
+            { name: "Psycho", genre: "Horror", year: "1960" },
+            { name: "Jaws", genre: "Horror", year: "1975" },
+            { name: "Hereditary", genre: "Horror", year: "2018" },
+            { name: "Midsommar", genre: "Horror", year: "2019" },
+            { name: "A Quiet Place", genre: "Horror", year: "2018" },
+            { name: "A Quiet Place Part II", genre: "Horror", year: "2021" },
+            { name: "It", genre: "Horror", year: "2017" },
+            { name: "It Chapter Two", genre: "Horror", year: "2019" },
+            { name: "Us", genre: "Horror", year: "2019" },
+            { name: "Get Out", genre: "Horror", year: "2017" },
+            { name: "Saw", genre: "Horror", year: "2004" },
+            { name: "Saw II", genre: "Horror", year: "2005" },
+            { name: "Saw III", genre: "Horror", year: "2006" },
+            { name: "Saw IV", genre: "Horror", year: "2007" },
+            { name: "Saw V", genre: "Horror", year: "2008" },
+            { name: "Saw VI", genre: "Horror", year: "2009" },
+            { name: "Saw VII", genre: "Horror", year: "2010" },
+            { name: "The Babadook", genre: "Horror", year: "2014" },
+            { name: "Sinister", genre: "Horror", year: "2012" },
+            { name: "Sinister 2", genre: "Horror", year: "2015" },
+            { name: "Annabelle", genre: "Horror", year: "2014" },
+            { name: "Annabelle Creation", genre: "Horror", year: "2017" },
+            { name: "Annabelle Comes Home", genre: "Horror", year: "2019" },
+            { name: "The Nun", genre: "Horror", year: "2018" },
+            { name: "The Nun II", genre: "Horror", year: "2023" },
+            { name: "The Conjuring The Devil Made Me Do It", genre: "Horror", year: "2021" },
+            { name: "Poltergeist", genre: "Horror", year: "1982" },
+            { name: "Paranormal Activity", genre: "Horror", year: "2007" },
+            { name: "Paranormal Activity 2", genre: "Horror", year: "2010" },
+            { name: "Paranormal Activity 3", genre: "Horror", year: "2011" },
+            { name: "The Blair Witch Project", genre: "Horror", year: "1999" },
+            { name: "Blair Witch", genre: "Horror", year: "2016" },
+            { name: "Rec", genre: "Horror", year: "2007" },
+            { name: "Rec 2", genre: "Horror", year: "2009" },
+            { name: "Scary Stories to Tell in the Dark", genre: "Horror", year: "2019" },
+            { name: "Scary Stories to Tell in the Dark 2", genre: "Horror", year: "2024" },
+            { name: "The Invisible Man", genre: "Horror", year: "2020" },
+            { name: "Candyman", genre: "Horror", year: "2021" },
+            { name: "Scream", genre: "Horror", year: "1996" },
+            { name: "Scream 2", genre: "Horror", year: "1997" },
+            { name: "Scream 3", genre: "Horror", year: "2000" },
+            { name: "Scream 4", genre: "Horror", year: "2011" },
+            { name: "Scream 5", genre: "Horror", year: "2022" },
+            { name: "Friday the 13th", genre: "Horror", year: "1980" },
+            { name: "A Nightmare on Elm Street", genre: "Horror", year: "1984" },
+            { name: "Halloween", genre: "Horror", year: "1978" },
+            { name: "The Texas Chain Saw Massacre", genre: "Horror", year: "1974" },
+            { name: "The Hills Have Eyes", genre: "Horror", year: "1977" },
+            { name: "Evil Dead", genre: "Horror", year: "2013" },
+            { name: "Evil Dead II", genre: "Horror", year: "1987" },
+            { name: "Army of Darkness", genre: "Horror", year: "1992" },
+            { name: "Evil Dead Rise", genre: "Horror", year: "2023" },
+            
+            // Comedy
+            { name: "Superbad", genre: "Comedy", year: "2007" },
+            { name: "Juno", genre: "Comedy", year: "2007" },
+            { name: "Whip It", genre: "Comedy", year: "2009" },
+            { name: "Clueless", genre: "Comedy", year: "1995" },
+            { name: "Mean Girls", genre: "Comedy", year: "2004" },
+            { name: "Legally Blonde", genre: "Comedy", year: "2001" },
+            { name: "Legally Blonde 2", genre: "Comedy", year: "2003" },
+            { name: "Bridesmaids", genre: "Comedy", year: "2011" },
+            { name: "The Hangover", genre: "Comedy", year: "2009" },
+            { name: "The Hangover Part II", genre: "Comedy", year: "2011" },
+            { name: "The Hangover Part III", genre: "Comedy", year: "2013" },
+            { name: "Old School", genre: "Comedy", year: "2003" },
+            { name: "Wedding Crashers", genre: "Comedy", year: "2005" },
+            { name: "I Love You Man", genre: "Comedy", year: "2009" },
+            { name: "Dodgeball", genre: "Comedy", year: "2004" },
+            { name: "Talladega Nights", genre: "Comedy", year: "2006" },
+            { name: "Step Brothers", genre: "Comedy", year: "2008" },
+            { name: "Anchorman", genre: "Comedy", year: "2004" },
+            { name: "Anchorman 2", genre: "Comedy", year: "2013" },
+            { name: "Elf", genre: "Comedy", year: "2003" },
+            { name: "Home Alone", genre: "Comedy", year: "1990" },
+            { name: "Home Alone 2", genre: "Comedy", year: "1992" },
+            { name: "Mrs Doubtfire", genre: "Comedy", year: "1993" },
+            { name: "The Santa Clause", genre: "Comedy", year: "1994" },
+            { name: "Jingle All the Way", genre: "Comedy", year: "1996" },
+            { name: "A Christmas Story", genre: "Comedy", year: "1983" },
+            { name: "Scrooged", genre: "Comedy", year: "1988" },
+            { name: "Its a Wonderful Life", genre: "Comedy", year: "1946" },
+            { name: "Miracle on 34th Street", genre: "Comedy", year: "1947" },
+            { name: "The Grinch", genre: "Comedy", year: "2000" },
+            { name: "Dumb and Dumber", genre: "Comedy", year: "1994" },
+            { name: "Ace Ventura", genre: "Comedy", year: "1994" },
+            { name: "The Mask", genre: "Comedy", year: "1994" },
+            { name: "Liar Liar", genre: "Comedy", year: "1997" },
+            { name: "Bruce Almighty", genre: "Comedy", year: "2003" },
+            { name: "Tropic Thunder", genre: "Comedy", year: "2008" },
+            { name: "Zoolander", genre: "Comedy", year: "2001" },
+            { name: "Zoolander 2", genre: "Comedy", year: "2015" },
+            { name: "Reno 911", genre: "Comedy", year: "2007" },
+            { name: "Borat", genre: "Comedy", year: "2006" },
+            { name: "Borat Subsequent Moviefilm", genre: "Comedy", year: "2020" },
+            { name: "Bruno", genre: "Comedy", year: "2009" },
+            { name: "The Dictator", genre: "Comedy", year: "2012" },
+            { name: "Airplane", genre: "Comedy", year: "1980" },
+            { name: "Airplane 2", genre: "Comedy", year: "1982" },
+            { name: "The Naked Gun", genre: "Comedy", year: "1988" },
+            { name: "Spaceballs", genre: "Comedy", year: "1987" },
+            { name: "Robin Hood Men in Tights", genre: "Comedy", year: "1993" },
+            { name: "Blazing Saddles", genre: "Comedy", year: "1974" },
+            { name: "Young Frankenstein", genre: "Comedy", year: "1974" },
+            { name: "The Pink Panther", genre: "Comedy", year: "1963" },
+            { name: "Inspector Clouseau", genre: "Comedy", year: "1968" },
+            { name: "Ghostbusters", genre: "Comedy", year: "1984" },
+            { name: "Ghostbusters II", genre: "Comedy", year: "1989" },
+            { name: "Ghostbusters Afterlife", genre: "Comedy", year: "2021" },
+            { name: "Beetlejuice", genre: "Comedy", year: "1988" },
+            { name: "Beetlejuice Beetlejuice", genre: "Comedy", year: "2024" },
+            
+            // Animation
+            { name: "The Lion King", genre: "Animation", year: "1994" },
+            { name: "The Lion King 2", genre: "Animation", year: "1997" },
+            { name: "Frozen", genre: "Animation", year: "2013" },
+            { name: "Frozen II", genre: "Animation", year: "2019" },
+            { name: "Toy Story", genre: "Animation", year: "1995" },
+            { name: "Toy Story 2", genre: "Animation", year: "1999" },
+            { name: "Toy Story 3", genre: "Animation", year: "2010" },
+            { name: "Toy Story 4", genre: "Animation", year: "2019" },
+            { name: "Finding Nemo", genre: "Animation", year: "2003" },
+            { name: "Finding Dory", genre: "Animation", year: "2016" },
+            { name: "Shrek", genre: "Animation", year: "2001" },
+            { name: "Shrek 2", genre: "Animation", year: "2004" },
+            { name: "Shrek 3", genre: "Animation", year: "2007" },
+            { name: "Shrek Forever After", genre: "Animation", year: "2010" },
+            { name: "Monsters Inc", genre: "Animation", year: "2001" },
+            { name: "Monsters University", genre: "Animation", year: "2013" },
+            { name: "Cars", genre: "Animation", year: "2006" },
+            { name: "Cars 2", genre: "Animation", year: "2011" },
+            { name: "Cars 3", genre: "Animation", year: "2017" },
+            { name: "A Bugs Life", genre: "Animation", year: "1998" },
+            { name: "Brave", genre: "Animation", year: "2012" },
+            { name: "Inside Out", genre: "Animation", year: "2015" },
+            { name: "Inside Out 2", genre: "Animation", year: "2024" },
+            { name: "Coco", genre: "Animation", year: "2017" },
+            { name: "Ratatouille", genre: "Animation", year: "2007" },
+            { name: "Up", genre: "Animation", year: "2009" },
+            { name: "Wall-E", genre: "Animation", year: "2008" },
+            { name: "The Incredibles", genre: "Animation", year: "2004" },
+            { name: "Incredibles 2", genre: "Animation", year: "2018" },
+            { name: "Kung Fu Panda", genre: "Animation", year: "2008" },
+            { name: "Kung Fu Panda 2", genre: "Animation", year: "2011" },
+            { name: "Kung Fu Panda 3", genre: "Animation", year: "2016" },
+            { name: "Kung Fu Panda 4", genre: "Animation", year: "2024" },
+            { name: "Madagascar", genre: "Animation", year: "2005" },
+            { name: "Madagascar 2", genre: "Animation", year: "2008" },
+            { name: "Madagascar 3", genre: "Animation", year: "2012" },
+            { name: "How to Train Your Dragon", genre: "Animation", year: "2010" },
+            { name: "How to Train Your Dragon 2", genre: "Animation", year: "2014" },
+            { name: "How to Train Your Dragon 3", genre: "Animation", year: "2019" },
+            { name: "Despicable Me", genre: "Animation", year: "2010" },
+            { name: "Despicable Me 2", genre: "Animation", year: "2013" },
+            { name: "Despicable Me 3", genre: "Animation", year: "2017" },
+            { name: "Minions", genre: "Animation", year: "2015" },
+            { name: "Minions Rise of Gru", genre: "Animation", year: "2022" },
+            { name: "Zootopia", genre: "Animation", year: "2016" },
+            { name: "Sing", genre: "Animation", year: "2016" },
+            { name: "Sing 2", genre: "Animation", year: "2021" },
+            { name: "Encanto", genre: "Animation", year: "2021" },
+            { name: "Moana", genre: "Animation", year: "2016" },
+            { name: "Tangled", genre: "Animation", year: "2010" },
+            { name: "Snow White", genre: "Animation", year: "1937" },
+            { name: "Cinderella", genre: "Animation", year: "1950" },
+            { name: "Sleeping Beauty", genre: "Animation", year: "1959" },
+            { name: "Beauty and the Beast", genre: "Animation", year: "1991" },
+            { name: "Aladdin", genre: "Animation", year: "1992" },
+            { name: "The Little Mermaid", genre: "Animation", year: "1989" },
+            { name: "Hercules", genre: "Animation", year: "1997" },
+            { name: "Mulan", genre: "Animation", year: "1998" },
+            { name: "Pocahontas", genre: "Animation", year: "1995" },
+            { name: "The Hunchback of Notre Dame", genre: "Animation", year: "1996" },
+            { name: "Tarzan", genre: "Animation", year: "1999" },
+            { name: "Brother Bear", genre: "Animation", year: "2003" },
+            { name: "Atlantis The Lost Empire", genre: "Animation", year: "2001" },
+            { name: "Treasure Planet", genre: "Animation", year: "2002" },
+            { name: "Lilo and Stitch", genre: "Animation", year: "2002" },
+            { name: "Bolt", genre: "Animation", year: "2008" },
+            { name: "Wreck It Ralph", genre: "Animation", year: "2012" },
+            { name: "Ralph Breaks the Internet", genre: "Animation", year: "2018" },
+            { name: "The Secret Life of Pets", genre: "Animation", year: "2016" },
+            { name: "The Secret Life of Pets 2", genre: "Animation", year: "2019" },
+            { name: "Antz", genre: "Animation", year: "1998" },
+            { name: "The Prince of Egypt", genre: "Animation", year: "1998" },
+            { name: "Sinbad Legend of the Seven Seas", genre: "Animation", year: "2003" },
+            { name: "Spirit Stallion of the Cimarron", genre: "Animation", year: "2002" },
+            { name: "Puss in Boots", genre: "Animation", year: "2011" },
+            { name: "Puss in Boots The Last Wish", genre: "Animation", year: "2022" },
+            { name: "Shark Tale", genre: "Animation", year: "2004" },
+            { name: "Flushed Away", genre: "Animation", year: "2006" },
+            { name: "Chicken Run", genre: "Animation", year: "2000" },
+            { name: "Wallace and Gromit", genre: "Animation", year: "1989" },
+            { name: "Wallace and Gromit The Curse of the Were Rabbit", genre: "Animation", year: "2005" },
+            { name: "Shaun the Sheep Movie", genre: "Animation", year: "2015" },
+            { name: "Shaun the Sheep Movie Farmageddon", genre: "Animation", year: "2019" },
+            { name: "Pinocchio", genre: "Animation", year: "1940" },
+            { name: "Dumbo", genre: "Animation", year: "1941" },
+            { name: "Fantasia", genre: "Animation", year: "1940" },
+            { name: "Bambi", genre: "Animation", year: "1942" },
+            { name: "The Jungle Book", genre: "Animation", year: "1967" },
+            { name: "Peter Pan", genre: "Animation", year: "1953" },
+            { name: "Alice in Wonderland", genre: "Animation", year: "1951" },
+            { name: "Megamind", genre: "Animation", year: "2010" },
+            { name: "Rise of the Guardians", genre: "Animation", year: "2012" },
+            { name: "The Croods", genre: "Animation", year: "2013" },
+            { name: "The Croods A New Age", genre: "Animation", year: "2020" },
+            { name: "Trolls", genre: "Animation", year: "2016" },
+            { name: "Trolls World Tour", genre: "Animation", year: "2020" },
+            { name: "Trolls Band Together", genre: "Animation", year: "2023" },
+            { name: "Ice Age", genre: "Animation", year: "2002" },
+            { name: "Ice Age 2 The Meltdown", genre: "Animation", year: "2006" },
+            { name: "Ice Age 3 Dawn of the Dinosaurs", genre: "Animation", year: "2009" },
+            { name: "Ice Age 4 Continental Drift", genre: "Animation", year: "2012" },
+            { name: "Ice Age 5 Collision Course", genre: "Animation", year: "2016" },
+            { name: "Rio", genre: "Animation", year: "2011" },
+            { name: "Rio 2", genre: "Animation", year: "2014" },
+            { name: "Happy Feet", genre: "Animation", year: "2006" },
+            { name: "Happy Feet 2", genre: "Animation", year: "2011" },
+            { name: "Surf's Up", genre: "Animation", year: "2007" },
+            { name: "Bee Movie", genre: "Animation", year: "2007" },
+            { name: "Emoji Movie", genre: "Animation", year: "2017" },
+            { name: "Angry Birds Movie", genre: "Animation", year: "2016" },
+            { name: "Angry Birds 2", genre: "Animation", year: "2019" },
+            
+            // Adventure
+            { name: "Jurassic Park", genre: "Adventure", year: "1993" },
+            { name: "Jurassic Park The Lost World", genre: "Adventure", year: "1997" },
+            { name: "Jurassic Park III", genre: "Adventure", year: "2001" },
+            { name: "Jurassic World", genre: "Adventure", year: "2015" },
+            { name: "Jurassic World Fallen Kingdom", genre: "Adventure", year: "2018" },
+            { name: "Jurassic World Dominion", genre: "Adventure", year: "2022" },
+            { name: "The Hunger Games", genre: "Adventure", year: "2012" },
+            { name: "The Hunger Games Catching Fire", genre: "Adventure", year: "2013" },
+            { name: "The Hunger Games Mockingjay Part 1", genre: "Adventure", year: "2014" },
+            { name: "The Hunger Games Mockingjay Part 2", genre: "Adventure", year: "2015" },
+            { name: "Divergent", genre: "Adventure", year: "2014" },
+            { name: "Divergent Insurgent", genre: "Adventure", year: "2015" },
+            { name: "Divergent Allegiant", genre: "Adventure", year: "2016" },
+            { name: "The Maze Runner", genre: "Adventure", year: "2014" },
+            { name: "The Maze Runner The Scorch Trials", genre: "Adventure", year: "2015" },
+            { name: "The Maze Runner The Death Cure", genre: "Adventure", year: "2018" },
+            { name: "Harry Potter and the Philosophers Stone", genre: "Adventure", year: "2001" },
+            { name: "Harry Potter and the Chamber of Secrets", genre: "Adventure", year: "2002" },
+            { name: "Harry Potter and the Prisoner of Azkaban", genre: "Adventure", year: "2004" },
+            { name: "Harry Potter and the Goblet of Fire", genre: "Adventure", year: "2005" },
+            { name: "Harry Potter and the Order of the Phoenix", genre: "Adventure", year: "2007" },
+            { name: "Harry Potter and the Half Blood Prince", genre: "Adventure", year: "2009" },
+            { name: "Harry Potter and the Deathly Hallows Part 1", genre: "Adventure", year: "2010" },
+            { name: "Harry Potter and the Deathly Hallows Part 2", genre: "Adventure", year: "2011" },
+            { name: "The Lord of the Rings The Fellowship of the Ring", genre: "Adventure", year: "2001" },
+            { name: "The Lord of the Rings The Two Towers", genre: "Adventure", year: "2002" },
+            { name: "The Lord of the Rings The Return of the King", genre: "Adventure", year: "2003" },
+            { name: "The Hobbit An Unexpected Journey", genre: "Adventure", year: "2012" },
+            { name: "The Hobbit The Desolation of Smaug", genre: "Adventure", year: "2013" },
+            { name: "The Hobbit The Battle of the Five Armies", genre: "Adventure", year: "2014" },
+            { name: "Percy Jackson and the Olympians", genre: "Adventure", year: "2010" },
+            { name: "Percy Jackson Sea of Monsters", genre: "Adventure", year: "2013" },
+            { name: "The Chronicles of Narnia The Lion the Witch and the Wardrobe", genre: "Adventure", year: "2005" },
+            { name: "The Chronicles of Narnia Prince Caspian", genre: "Adventure", year: "2008" },
+            { name: "The Chronicles of Narnia The Voyage of the Dawn Treader", genre: "Adventure", year: "2010" },
+            { name: "Coraline", genre: "Adventure", year: "2009" },
+            { name: "ParaNorman", genre: "Adventure", year: "2012" },
+            { name: "The Spiderwick Chronicles", genre: "Adventure", year: "2008" },
+            { name: "Bridge to Terabithia", genre: "Adventure", year: "2007" },
+            { name: "Charlottes Web", genre: "Adventure", year: "2006" },
+            { name: "Stuart Little", genre: "Adventure", year: "1999" },
+            { name: "Babe", genre: "Adventure", year: "1995" },
+            { name: "Beethoven", genre: "Adventure", year: "1992" },
+            { name: "101 Dalmatians", genre: "Adventure", year: "1961" },
+            { name: "Homeward Bound", genre: "Adventure", year: "1993" },
+            { name: "Free Willy", genre: "Adventure", year: "1993" },
+            { name: "Orca", genre: "Adventure", year: "1977" },
+            { name: "The Meg", genre: "Adventure", year: "2018" },
+            { name: "20000 Leagues Under the Sea", genre: "Adventure", year: "1954" },
+            { name: "Journey to the Center of the Earth", genre: "Adventure", year: "2008" },
+            { name: "Journey 2 The Mysterious Island", genre: "Adventure", year: "2012" },
+            { name: "National Treasure", genre: "Adventure", year: "2004" },
+            { name: "National Treasure Book of Secrets", genre: "Adventure", year: "2007" },
+            { name: "Pirates of the Caribbean The Curse of the Black Pearl", genre: "Adventure", year: "2003" },
+            { name: "Pirates of the Caribbean Dead Mans Chest", genre: "Adventure", year: "2006" },
+            { name: "Pirates of the Caribbean At Worlds End", genre: "Adventure", year: "2007" },
+            { name: "Pirates of the Caribbean On Stranger Tides", genre: "Adventure", year: "2011" },
+            { name: "Pirates of the Caribbean Dead Men Tell No Tales", genre: "Adventure", year: "2017" },
+            { name: "Treasure Island", genre: "Adventure", year: "1950" },
+            { name: "Mummy", genre: "Adventure", year: "1999" },
+            { name: "The Mummy Returns", genre: "Adventure", year: "2001" },
+            { name: "The Mummy Tomb of the Dragon Emperor", genre: "Adventure", year: "2008" },
+            { name: "The Scorpion King", genre: "Adventure", year: "2002" },
+            { name: "King Kong", genre: "Adventure", year: "2005" },
+            { name: "Kong Skull Island", genre: "Adventure", year: "2017" },
+            { name: "Godzilla", genre: "Adventure", year: "2014" },
+            { name: "Godzilla King of the Monsters", genre: "Adventure", year: "2019" },
+            { name: "Godzilla vs Kong", genre: "Adventure", year: "2021" },
+            
+            // Thriller/Mystery
+            { name: "Se7en", genre: "Thriller", year: "1995" },
+            { name: "Zodiac", genre: "Thriller", year: "2007" },
+            { name: "The Girl with the Dragon Tattoo", genre: "Thriller", year: "2011" },
+            { name: "Prisoners", genre: "Thriller", year: "2013" },
+            { name: "Gone Girl", genre: "Thriller", year: "2014" },
+            { name: "The Girl on the Train", genre: "Thriller", year: "2016" },
+            { name: "Rebecca", genre: "Thriller", year: "1940" },
+            { name: "Suspicion", genre: "Thriller", year: "1941" },
+            { name: "Marnie", genre: "Thriller", year: "1964" },
+            { name: "Rope", genre: "Thriller", year: "1948" },
+            { name: "Shadow of a Doubt", genre: "Thriller", year: "1943" },
+            { name: "Strangers on a Train", genre: "Thriller", year: "1951" },
+            { name: "Dial M for Murder", genre: "Thriller", year: "1954" },
+            { name: "The Birds", genre: "Thriller", year: "1963" },
+            { name: "Frenzy", genre: "Thriller", year: "1972" },
+            { name: "Family Plot", genre: "Thriller", year: "1976" },
+            { name: "Topaz", genre: "Thriller", year: "1969" },
+            { name: "Torn Curtain", genre: "Thriller", year: "1966" },
+            { name: "North by Northwest", genre: "Thriller", year: "1959" },
+            { name: "The 39 Steps", genre: "Thriller", year: "1935" },
+            { name: "Spellbound", genre: "Thriller", year: "1945" },
+            { name: "Notorious", genre: "Thriller", year: "1946" },
+            { name: "Lifeboat", genre: "Thriller", year: "1944" },
+            { name: "Sabotage", genre: "Thriller", year: "1936" },
+            { name: "The Lodger", genre: "Thriller", year: "1927" },
+            { name: "Blackmail", genre: "Thriller", year: "1929" },
+            { name: "Murder", genre: "Thriller", year: "1930" },
+            { name: "Shutter Island", genre: "Thriller", year: "2010" },
+            { name: "The Prestige", genre: "Thriller", year: "2006" },
+            { name: "The Illusionist", genre: "Thriller", year: "2006" },
+            { name: "Now You See Me", genre: "Thriller", year: "2013" },
+            { name: "Now You See Me 2", genre: "Thriller", year: "2016" },
+            { name: "The Usual Suspects", genre: "Thriller", year: "1995" },
+            { name: "Memento", genre: "Thriller", year: "2000" },
+            { name: "Donnie Darko", genre: "Thriller", year: "2001" },
+            { name: "Mulholland Drive", genre: "Thriller", year: "2001" },
+            { name: "Eraserhead", genre: "Thriller", year: "1977" },
+            { name: "Blue Velvet", genre: "Thriller", year: "1986" },
+            { name: "Inland Empire", genre: "Thriller", year: "2006" },
+            { name: "Mystic River", genre: "Thriller", year: "2003" },
+            { name: "Chinatown", genre: "Thriller", year: "1974" },
+            { name: "L.A. Confidential", genre: "Thriller", year: "1997" },
+            { name: "The Game", genre: "Thriller", year: "1997" },
+            { name: "The Conversation", genre: "Thriller", year: "1974" },
+            { name: "The Parallax View", genre: "Thriller", year: "1974" },
+            { name: "All the Presidents Men", genre: "Thriller", year: "1976" },
+            { name: "The Verdict", genre: "Thriller", year: "1982" },
+            { name: "Kramer vs Kramer", genre: "Thriller", year: "1979" },
+            { name: "Tootsie", genre: "Thriller", year: "1982" },
+            { name: "Rainman", genre: "Thriller", year: "1988" },
+            { name: "Awakenings", genre: "Thriller", year: "1990" },
+            
+            // Romance
+            { name: "The Notebook", genre: "Romance", year: "2004" },
+            { name: "La La Land", genre: "Romance", year: "2016" },
+            { name: "The Fault in Our Stars", genre: "Romance", year: "2014" },
+            { name: "Crazy Rich Asians", genre: "Romance", year: "2018" },
+            { name: "Notting Hill", genre: "Romance", year: "1999" },
+            { name: "Love Actually", genre: "Romance", year: "2003" },
+            { name: "Sleepless in Seattle", genre: "Romance", year: "1993" },
+            { name: "Youve Got Mail", genre: "Romance", year: "1998" },
+            { name: "When Harry Met Sally", genre: "Romance", year: "1989" },
+            { name: "A Walk to Remember", genre: "Romance", year: "2002" },
+            { name: "The Time Travelers Wife", genre: "Romance", year: "2009" },
+            { name: "About Time", genre: "Romance", year: "2013" },
+            { name: "In Time", genre: "Romance", year: "2011" },
+            { name: "The Vow", genre: "Romance", year: "2012" },
+            { name: "Dear John", genre: "Romance", year: "2010" },
+            { name: "Safe Haven", genre: "Romance", year: "2013" },
+            { name: "The Last Song", genre: "Romance", year: "2010" },
+            { name: "Twilight", genre: "Romance", year: "2008" },
+            { name: "Twilight New Moon", genre: "Romance", year: "2009" },
+            { name: "Twilight Eclipse", genre: "Romance", year: "2010" },
+            { name: "Twilight Breaking Dawn Part 1", genre: "Romance", year: "2011" },
+            { name: "Twilight Breaking Dawn Part 2", genre: "Romance", year: "2012" },
+            { name: "Pride and Prejudice", genre: "Romance", year: "2005" },
+            { name: "Sense and Sensibility", genre: "Romance", year: "1995" },
+            { name: "Emma", genre: "Romance", year: "2020" },
+            { name: "Persuasion", genre: "Romance", year: "2022" },
+            { name: "Jane Eyre", genre: "Romance", year: "2011" },
+            { name: "Wuthering Heights", genre: "Romance", year: "2009" },
+            { name: "North and South", genre: "Romance", year: "2004" },
+            { name: "The Phantom of the Opera", genre: "Romance", year: "2004" },
+            { name: "Les Miserables", genre: "Romance", year: "2012" },
+            { name: "Chicago", genre: "Romance", year: "2002" },
+            { name: "Hairspray", genre: "Romance", year: "2007" },
+            { name: "Mamma Mia", genre: "Romance", year: "2008" },
+            { name: "Mamma Mia Here We Go Again", genre: "Romance", year: "2018" },
+            { name: "Grease", genre: "Romance", year: "1978" },
+            { name: "Grease 2", genre: "Romance", year: "1982" },
+            { name: "High School Musical", genre: "Romance", year: "2006" },
+            { name: "High School Musical 2", genre: "Romance", year: "2007" },
+            { name: "High School Musical 3", genre: "Romance", year: "2008" },
+            { name: "Cinderella 2015", genre: "Romance", year: "2015" },
+            { name: "Cinderella 2021", genre: "Romance", year: "2021" },
+            { name: "A Cinderella Story", genre: "Romance", year: "2004" },
+            { name: "Anastasia", genre: "Romance", year: "1997" },
+            { name: "Ever After", genre: "Romance", year: "1998" },
+            { name: "Enchanted", genre: "Romance", year: "2007" },
+            { name: "Enchanted 2", genre: "Romance", year: "2024" },
+            { name: "Stardust", genre: "Romance", year: "2007" },
+            { name: "The Princess Bride", genre: "Romance", year: "1987" },
+            { name: "Ella Enchanted", genre: "Romance", year: "2004" },
+            { name: "Snow White and the Huntsman", genre: "Romance", year: "2012" },
+            { name: "The Huntsman Winters War", genre: "Romance", year: "2016" },
+            { name: "Maleficent", genre: "Romance", year: "2014" },
+            { name: "Maleficent Mistress of Evil", genre: "Romance", year: "2019" },
+            { name: "Beauty and the Beast 2017", genre: "Romance", year: "2017" },
+            { name: "Aladdin 2019", genre: "Romance", year: "2019" },
+            { name: "The Little Mermaid 2023", genre: "Romance", year: "2023" }
+        ];
+
+        // Initialize movies
+        allMovies = moviesData;
+        trendingMovies = moviesData.slice(0, 11);
+
+        function updateSelectedCount() {
+            if (selectedMovies.size > 0) {
+                countText.textContent = `${selectedMovies.size} selected`;
+                selectedCountBadge.classList.add('show');
+            } else {
+                selectedCountBadge.classList.remove('show');
+            }
+        }
+
+        function toggleMovie(movieName, button) {
+            if (selectedMovies.has(movieName)) {
+                selectedMovies.delete(movieName);
+                button.classList.remove('active');
+                button.innerHTML = '<i class="fa-solid fa-circle-plus"></i>';
+            } else {
+                selectedMovies.add(movieName);
+                button.classList.add('active');
+                button.innerHTML = '<i class="fa-solid fa-circle-check"></i>';
+            }
+            updateSelectedCount();
+        }
+
+
+        const moviePosterFallback =
+            "https://placehold.co/300x450/e4e6eb/65676b?text=No+Poster";
+
+        function getMoviePosterUrl(movie) {
+            const query = `${movie.name} ${movie.year} official movie poster`;
+            return (
+                "https://tse1.mm.bing.net/th" +
+                "?q=" + encodeURIComponent(query) +
+                "&w=300&h=450&c=7&rs=1&p=0&dpr=2" +
+                "&pid=1.7&mkt=en-US&adlt=moderate"
+            );
+        }
+
+        function renderMovies(movies) {
+            moviesList.innerHTML = '';
+            movies.forEach((movie, index) => {
+                const item = document.createElement('div');
+                item.className = 'movie-item';
+                const isSelected = selectedMovies.has(movie.name);
+                const buttonClass = isSelected ? 'add-btn active' : 'add-btn';
+                const iconClass = isSelected ? 'fa-solid fa-circle-check' : 'fa-solid fa-circle-plus';
+                
+                item.innerHTML = `
+                    <img
+                        src="${getMoviePosterUrl(movie)}"
+                        alt="${movie.name} poster"
+                        class="movie-image"
+                        loading="lazy"
+                        referrerpolicy="no-referrer"
+                        onerror="this.onerror=null;this.src=moviePosterFallback"
+                    >
+                    <div class="movie-info">
+                        <p class="movie-title">${movie.name}</p>
+                        <p class="movie-meta">${movie.genre} · ${movie.year}</p>
+                    </div>
+                    <button class="${buttonClass}">
+                        <i class="${iconClass}"></i>
+                    </button>
+                `;
+                
+                const button = item.querySelector('button');
+                button.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleMovie(movie.name, button);
+                });
+                
+                moviesList.appendChild(item);
+            });
+        }
+
+        // Render only after poster variables and renderMovies are initialized.
+        renderMovies(trendingMovies);
+
+        function displaySelectedMovies() {
+            moviesDisplay.innerHTML = '';
+            selectedMovies.forEach(movie => {
+                const tag = document.createElement('div');
+                tag.className = 'movie-tag';
+                tag.innerHTML = `
+                    ${movie}
+                    <span class="remove-btn">×</span>
+                `;
+                tag.querySelector('.remove-btn').addEventListener('click', () => {
+                    selectedMovies.delete(movie);
+                    displaySelectedMovies();
+                });
+                moviesDisplay.appendChild(tag);
+            });
+        }
+
+        function showPage(page) {
+            addMoviesPage.classList.remove('active');
+            moviesPage.classList.remove('active');
+            page.classList.add('active');
+        }
+
+        // Done button handler
+        document.getElementById('done-btn').addEventListener('click', () => {
+            if (selectedMovies.size > 0) {
+                displaySelectedMovies();
+                showPage(moviesPage);
+            } else {
+                alert('Please select at least one movie');
+            }
+        });
+
+        // Close button handler
+        document.getElementById('close-btn').addEventListener('click', () => {
+            showPage(addMoviesPage);
+        });
+
+        // Add more button handler
+        document.getElementById('add-more-btn').addEventListener('click', () => {
+            showPage(addMoviesPage);
+        });
+
+        // Save button handler
+        document.getElementById('save-btn').addEventListener('click', () => {
+            const moviesList = Array.from(selectedMovies).join(', ');
+            alert(`Movies saved: ${moviesList}`);
+        });
+
+        // Search functionality
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            if (query === '') {
+                renderMovies(trendingMovies);
+            } else {
+                const filtered = allMovies.filter(movie => 
+                    movie.name.toLowerCase().includes(query)
+                );
+                renderMovies(filtered);
+            }
+        });
+    </script>
+</body>
+</html>

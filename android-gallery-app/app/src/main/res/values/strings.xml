@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">OK Plus</string>
+    <string name="gallery">Gallery</string>
+    <string name="select_multiple">Select multiple</string>
+    <string name="done">Done</string>
+    <string name="no_media">No photos or videos found</string>
+    <string name="permission_needed">Allow photo and video access to use the gallery.</string>
+</resources>

@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script>window.alert=function(){};</script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add TV Shows</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+        }
+        .search-container {
+            background-color: #f0f2f5;
+            border-radius: 20px;
+        }
+        .show-item {
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+        }
+        .show-item:active {
+            background-color: #f0f2f5;
+        }
+        .show-image {
+            width: 48px;
+            height: 48px;
+            border-radius: 6px;
+            object-fit: cover;
+            flex-shrink: 0;
+            background-color: #e0e0e0;
+        }
+        .show-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .show-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin: 0;
+        }
+        .show-meta {
+            font-size: 12px;
+            color: #65676b;
+            margin: 2px 0 0 0;
+        }
+        .add-btn {
+            color: #9ca3af;
+            font-size: 20px;
+            cursor: pointer;
+            transition: color 0.2s;
+            border: none;
+            background: none;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .add-btn:hover {
+            color: #4b5563;
+        }
+        .add-btn.active {
+            color: #0a66c2;
+        }
+        .selected-count {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #0a66c2;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            display: none;
+        }
+        .selected-count.show {
+            display: block;
+        }
+        .page {
+            display: none;
+        }
+        .page.active {
+            display: block;
+        }
+        .show-tag {
+            display: inline-block;
+            background-color: #f0f2f5;
+            padding: 6px 10px;
+            border-radius: 16px;
+            margin: 3px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .show-tag .remove-btn {
+            margin-left: 6px;
+            cursor: pointer;
+            color: #65676b;
+        }
+        .show-tag .remove-btn:hover {
+            color: #000;
+        }
+        .add-more-btn {
+            width: 100%;
+            background-color: #f0f2f5;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .add-more-btn:hover {
+            background-color: #e4e6eb;
+        }
+        .save-btn {
+            width: 100%;
+            background-color: #1878F3;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            position: fixed;
+            bottom: 16px;
+            left: 16px;
+            right: 16px;
+            max-width: calc(100% - 32px);
+        }
+        .save-btn:hover {
+            background-color: #0d5ecf;
+        }
+        .shows-container {
+            padding-bottom: 80px;
+        }
+        .shows-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        /* Merged fix: disabled Done button when no TV shows are selected */
+        #done-btn:disabled {
+            color: #bcc0c4 !important;
+            cursor: default !important;
+            opacity: 1 !important;
+        }
+    </style>
+
+</head>
+<body class="max-w-md mx-auto min-h-screen pb-20">
+    <!-- Add TV Shows Page -->
+    <div id="add-shows-page" class="page active">
+        <!-- Header -->
+        <header class="p-4 flex items-center justify-between">
+            <div class="flex items-center">
+                <button class="text-2xl mr-4">
+                    <i class="fa-solid fa-chevron-left"></i>
+                </button>
+                <h1 class="text-2xl font-bold">Add TV shows</h1>
+            </div>
+            <button id="done-btn" class="text-lg font-bold text-blue-600 hover:text-blue-700" disabled aria-disabled="true">
+                Done
+            </button>
+        </header>
+
+        <!-- Search Bar -->
+        <div class="px-4 mb-6">
+            <div class="search-container flex items-center px-4 py-2">
+                <i class="fa-solid fa-magnifying-glass text-gray-500 mr-3"></i>
+                <input 
+                    type="text" 
+                    id="search-input"
+                    placeholder="Search TV shows" 
+                    class="bg-transparent border-none outline-none w-full text-lg placeholder-gray-500"
+                >
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="px-4">
+            <div id="shows-list" class="shows-list">
+                <!-- Shows will be injected here -->
+            </div>
+        </div>
+
+        <!-- Selected Count Badge -->
+        <div id="selected-count" class="selected-count">
+            <span id="count-text">0 selected</span>
+        </div>
+    </div>
+
+    <!-- Shows Confirmation Page -->
+    <div id="shows-page" class="page">
+        <!-- Header -->
+        <header class="p-4 flex items-center justify-between">
+            <button id="close-btn" class="text-2xl">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            <h1 class="text-2xl font-bold">TV shows</h1>
+            <div style="width: 24px;"></div>
+        </header>
+
+        <!-- Add More Button -->
+        <div class="px-4 mb-6">
+            <button id="add-more-btn" class="add-more-btn">
+                <i class="fa-solid fa-plus"></i>
+                Add more
+            </button>
+        </div>
+
+        <!-- Shows Display -->
+        <div class="px-4 shows-container" id="shows-display">
+            <!-- Selected shows will be displayed here -->
+        </div>
+
+        <!-- Save Button -->
+        <button id="save-btn" class="save-btn">Save</button>
+    </div>
+
+    <script>
+        const trendingShows = [
+            { name: "Brooklyn Nine-Nine", genre: "Comedy", year: "2013", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Code Of Law", genre: "Drama", year: "2012", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Community", genre: "Comedy", year: "2009", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Fleabag", genre: "Drama", year: "2016", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Kin", genre: "Drama", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "MasterChef", genre: "Cooking", year: "2010", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Modern Family", genre: "Comedy", year: "2009", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Parks And Recreation", genre: "Comedy", year: "2009", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Sarangui Boolshichak", genre: "Romance", year: "2019", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Schitt's Creek", genre: "Comedy", year: "2015", image: "https://m.media-amazon.com/images/M/MV5BNjE1NjYwNzYtNDc5Yy00YTZkLThhMzAtYTI5ZjU2ZjZhNjA4XkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "Squid Game", genre: "Thriller", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BYWE3YWRiY2EtYTlmYy00ZmQ3LWJjMzEtYTUzYjMyZTBjOWUyXkEyXkFqcGdeQXVyMDM2NDM2MQ@@._V1_SX300.jpg" }
+        ];
+
+        const allShows = [
+            ...trendingShows,
+            { name: "Breaking Bad", genre: "Drama", year: "2008", image: "https://m.media-amazon.com/images/M/MV5BMjMwNDI5MjcyM15BMl5BanBnXkFtZTgwNjIwNjI1MTE@._V1_SX300.jpg" },
+            { name: "Game of Thrones", genre: "Fantasy", year: "2011", image: "https://m.media-amazon.com/images/M/MV5BN2IzYzBiOTQtNWZhNS00ODI3LWI1NjAtZGUwMWIwMThhYjhkXkEyXkFqcGdeQXVyNjU0OTQ0OTY@._V1_SX300.jpg" },
+            { name: "The Office", genre: "Comedy", year: "2005", image: "https://m.media-amazon.com/images/M/MV5BN2IzYzBiOTQtNWZhNS00ODI3LWI1NjAtZGUwMWIwMThhYjhkXkEyXkFqcGdeQXVyNjU0OTQ0OTY@._V1_SX300.jpg" },
+            { name: "Friends", genre: "Comedy", year: "1994", image: "https://m.media-amazon.com/images/M/MV5BNDVkYjU0MzEtNjlkYy00NWI5LThhYjAtZGUwNWIzN2UyODZkXkEyXkFqcGdeQXVyNTA4NzMyMzA@._V1_SX300.jpg" },
+            { name: "Stranger Things", genre: "Sci-Fi", year: "2016", image: "https://m.media-amazon.com/images/M/MV5BMDZkYmVhNjMtN2M2My00NmM2LWE1ZmYtZTAwMDJlOTEwYWZlXkEyXkFqcGdeQXVyMzQ2MDI5NjU@._V1_SX300.jpg" },
+            { name: "The Crown", genre: "Drama", year: "2016", image: "https://m.media-amazon.com/images/M/MV5BZDZkODAwYzEtMDZkYy00ZWYzLThhN2QtZWRmNzg0YzgyNDMyXkEyXkFqcGdeQXVyMDM2NDM2MQ@@._V1_SX300.jpg" },
+            { name: "The Mandalorian", genre: "Sci-Fi", year: "2019", image: "https://m.media-amazon.com/images/M/MV5BZDZkODAwYzEtMDZkYy00ZWYzLThhN2QtZWRmNzg0YzgyNDMyXkEyXkFqcGdeQXVyMDM2NDM2MQ@@._V1_SX300.jpg" },
+            { name: "The Witcher", genre: "Fantasy", year: "2019", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Westworld", genre: "Sci-Fi", year: "2016", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Sherlock", genre: "Drama", year: "2010", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "True Detective", genre: "Crime", year: "2014", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Mindhunter", genre: "Crime", year: "2017", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Boys", genre: "Action", year: "2019", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Ozark", genre: "Drama", year: "2017", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Peaky Blinders", genre: "Crime", year: "2013", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Marvelous Mrs. Maisel", genre: "Comedy", year: "2017", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Succession", genre: "Drama", year: "2018", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Handmaid's Tale", genre: "Drama", year: "2017", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Euphoria", genre: "Drama", year: "2019", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Last of Us", genre: "Drama", year: "2023", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Chernobyl", genre: "Drama", year: "2019", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Sopranos", genre: "Crime", year: "1999", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Mad Men", genre: "Drama", year: "2007", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Wire", genre: "Crime", year: "2002", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Dexter", genre: "Crime", year: "2006", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Good Wife", genre: "Drama", year: "2009", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Veep", genre: "Comedy", year: "2012", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Silicon Valley", genre: "Comedy", year: "2014", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Arrested Development", genre: "Comedy", year: "2003", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "30 Rock", genre: "Comedy", year: "2006", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Good Place", genre: "Comedy", year: "2016", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Killing Eve", genre: "Thriller", year: "2018", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Bodyguard", genre: "Thriller", year: "2018", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Line of Duty", genre: "Crime", year: "2012", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Broadchurch", genre: "Crime", year: "2013", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Fall", genre: "Crime", year: "2013", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Hannibal", genre: "Thriller", year: "2013", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Bates Motel", genre: "Thriller", year: "2013", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "American Horror Story", genre: "Horror", year: "2011", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Haunting of Hill House", genre: "Horror", year: "2018", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Midnight Mass", genre: "Horror", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Twilight Zone", genre: "Sci-Fi", year: "2019", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Black Mirror", genre: "Sci-Fi", year: "2011", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Altered Carbon", genre: "Sci-Fi", year: "2018", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Battlestar Galactica", genre: "Sci-Fi", year: "2004", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Doctor Who", genre: "Sci-Fi", year: "1963", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Expanse", genre: "Sci-Fi", year: "2015", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "For All Mankind", genre: "Sci-Fi", year: "2019", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Raised by Wolves", genre: "Sci-Fi", year: "2020", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "House of the Dragon", genre: "Fantasy", year: "2022", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Rings of Power", genre: "Fantasy", year: "2022", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Wheel of Time", genre: "Fantasy", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Castlevania", genre: "Fantasy", year: "2017", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Arcane", genre: "Animation", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Cyberpunk: Edgerunners", genre: "Animation", year: "2022", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Daria", genre: "Animation", year: "1997", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Bojack Horseman", genre: "Animation", year: "2014", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Rick and Morty", genre: "Animation", year: "2013", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "South Park", genre: "Animation", year: "1997", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Simpsons", genre: "Animation", year: "1989", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Family Guy", genre: "Animation", year: "1999", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Futurama", genre: "Animation", year: "1999", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Andor", genre: "Sci-Fi", year: "2022", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Obi-Wan Kenobi", genre: "Sci-Fi", year: "2022", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Book of Boba Fett", genre: "Sci-Fi", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Loki", genre: "Sci-Fi", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "WandaVision", genre: "Sci-Fi", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Falcon and the Winter Soldier", genre: "Action", year: "2021", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Daredevil", genre: "Action", year: "2015", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Jessica Jones", genre: "Action", year: "2015", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Luke Cage", genre: "Action", year: "2016", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Iron Fist", genre: "Action", year: "2017", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "The Defenders", genre: "Action", year: "2017", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Punisher", genre: "Action", year: "2017", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" },
+            { name: "Agents of S.H.I.E.L.D", genre: "Action", year: "2013", image: "https://m.media-amazon.com/images/M/MV5BMjAwNDU3MzcyOV5BMl5BanBnXkFtZTgwNzc5NzA3NjM@._V1_SX300.jpg" }
+        ];
+
+        const showsList = document.getElementById('shows-list');
+        const searchInput = document.getElementById('search-input');
+        const selectedCountBadge = document.getElementById('selected-count');
+        const countText = document.getElementById('count-text');
+        const doneBtn = document.getElementById('done-btn');
+        const addShowsPage = document.getElementById('add-shows-page');
+        const showsPage = document.getElementById('shows-page');
+        const showsDisplay = document.getElementById('shows-display');
+        
+        let selectedShows = new Set();
+
+        function updateSelectedCount() {
+            const hasSelection = selectedShows.size > 0;
+            if (doneBtn) {
+                doneBtn.disabled = !hasSelection;
+                doneBtn.setAttribute('aria-disabled', hasSelection ? 'false' : 'true');
+            }
+            if (hasSelection) {
+                countText.textContent = `${selectedShows.size} selected`;
+                selectedCountBadge.classList.add('show');
+            } else {
+                selectedCountBadge.classList.remove('show');
+            }
+        }
+
+        function toggleShow(showName, button) {
+            if (selectedShows.has(showName)) {
+                selectedShows.delete(showName);
+                button.classList.remove('active');
+                button.innerHTML = '<i class="fa-solid fa-circle-plus"></i>';
+            } else {
+                selectedShows.add(showName);
+                button.classList.add('active');
+                button.innerHTML = '<i class="fa-solid fa-circle-check"></i>';
+            }
+            updateSelectedCount();
+        }
+
+
+        const posterCache = new Map();
+
+        const fixedPosters = {
+            "Code Of Law": "https://upload.wikimedia.org/wikipedia/en/8/88/CodeofLaw.png"
+        };
+        const posterFallback = `data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="96" height="144" viewBox="0 0 96 144"%3E%3Crect width="96" height="144" fill="%23e4e6eb"/%3E%3Cpath d="M28 55h40v34H28z" fill="%23c7cbd1"/%3E%3Ccircle cx="39" cy="66" r="6" fill="%23e4e6eb"/%3E%3Cpath d="M31 84l12-12 8 8 7-7 7 11z" fill="%23e4e6eb"/%3E%3C/svg%3E`;
+
+        async function loadRealPoster(img, showName) {
+            if (!img || !showName) return;
+
+            if (fixedPosters[showName]) {
+                img.src = fixedPosters[showName];
+                posterCache.set(showName, fixedPosters[showName]);
+                return;
+            }
+
+            if (posterCache.has(showName)) {
+                img.src = posterCache.get(showName);
+                return;
+            }
+
+            img.src = posterFallback;
+
+            try {
+                const response = await fetch(
+                    `https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(showName)}`
+                );
+
+                if (!response.ok) throw new Error(`Poster request failed: ${response.status}`);
+
+                const data = await response.json();
+                const poster =
+                    data?.image?.medium ||
+                    data?.image?.original ||
+                    posterFallback;
+
+                posterCache.set(showName, poster);
+                img.src = poster;
+            } catch (error) {
+                console.warn(`Could not load poster for ${showName}`, error);
+                posterCache.set(showName, posterFallback);
+                img.src = posterFallback;
+            }
+        }
+
+        function renderShows(shows) {
+            showsList.innerHTML = '';
+            shows.forEach((show) => {
+                const item = document.createElement('div');
+                item.className = 'show-item';
+                const isSelected = selectedShows.has(show.name);
+                const buttonClass = isSelected ? 'add-btn active' : 'add-btn';
+                const iconClass = isSelected ? 'fa-solid fa-circle-check' : 'fa-solid fa-circle-plus';
+                
+                item.innerHTML = `
+                    <img
+                        src="${posterFallback}"
+                        alt="${show.name} poster"
+                        class="show-image"
+                        data-show-name="${show.name.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"
+                        loading="lazy"
+                    >
+                    <div class="show-info">
+                        <p class="show-title">${show.name}</p>
+                        <p class="show-meta">${show.genre} · ${show.year}</p>
+                    </div>
+                    <button class="${buttonClass}">
+                        <i class="${iconClass}"></i>
+                    </button>
+                `;
+                
+                const button = item.querySelector('button');
+                button.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleShow(show.name, button);
+                });
+                
+                showsList.appendChild(item);
+                loadRealPoster(item.querySelector('.show-image'), show.name);
+            });
+        }
+
+        function displaySelectedShows() {
+            showsDisplay.innerHTML = '';
+            selectedShows.forEach(show => {
+                const tag = document.createElement('div');
+                tag.className = 'show-tag';
+                tag.innerHTML = `
+                    ${show}
+                    <span class="remove-btn">×</span>
+                `;
+                tag.querySelector('.remove-btn').addEventListener('click', () => {
+                    selectedShows.delete(show);
+                    displaySelectedShows();
+                });
+                showsDisplay.appendChild(tag);
+            });
+        }
+
+        function showPage(page) {
+            addShowsPage.classList.remove('active');
+            showsPage.classList.remove('active');
+            page.classList.add('active');
+        }
+
+        // Initial render
+        renderShows(trendingShows);
+        updateSelectedCount();
+
+        // Done button handler
+        doneBtn.addEventListener('click', () => {
+            if (selectedShows.size <= 0) return;
+            displaySelectedShows();
+            showPage(showsPage);
+        });
+
+        // Close button handler
+        document.getElementById('close-btn').addEventListener('click', () => {
+            showPage(addShowsPage);
+        });
+
+        // Add more button handler
+        document.getElementById('add-more-btn').addEventListener('click', () => {
+            showPage(addShowsPage);
+        });
+
+        // Save button handler
+        document.getElementById('save-btn').addEventListener('click', () => {
+            const showsList = Array.from(selectedShows).join(', ');
+            alert(`TV shows saved: ${showsList}`);
+        });
+
+        // Search functionality
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            if (query === '') {
+                renderShows(trendingShows);
+            } else {
+                const filtered = allShows.filter(show => 
+                    show.name.toLowerCase().includes(query)
+                );
+                renderShows(filtered);
+            }
+        });
+    </script>
+</body>
+</html>

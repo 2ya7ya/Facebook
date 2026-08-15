@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/ic_app"
+        android:label="OKPlus"
+        android:requestLegacyExternalStorage="false"
+        android:theme="@style/Theme.OKPlus"
+        android:usesCleartextTraffic="false">
+
+        <activity android:name=".GalleryPickerActivity" android:exported="false" android:screenOrientation="portrait" android:theme="@style/Theme.OKPlus.Gallery" />
+        <activity android:name=".MainActivity" android:exported="false" />
+        <activity android:name=".LoginActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

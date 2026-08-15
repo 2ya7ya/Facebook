@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script>window.alert=function(){};</script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>School/College</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+            -webkit-font-smoothing: antialiased;
+            overflow: hidden;
+        }
+        .header-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #050505;
+        }
+        .search-input-container {
+            margin-top: 12px;
+        }
+        .search-input {
+            border: 1px solid #ced0d4;
+            border-radius: 10px;
+            padding: 14px 16px;
+            width: 100%;
+            font-size: 1.1rem;
+            color: #050505;
+            background-color: #ffffff;
+            min-height: 56px; /* Ensuring the box has height even when empty */
+        }
+        .save-button {
+            background-color: #1877f2;
+            color: #ffffff;
+            font-weight: 600;
+            border-radius: 8px;
+            padding: 8px 12px;
+            width: 100%;
+            text-align: center;
+            font-size: 0.95rem;
+            border: none;
+            cursor: pointer;
+            line-height: 1.2;
+        }
+        .save-button:active {
+            background-color: #166fe5;
+        }
+        .sticky-footer {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background-color: white;
+            padding: 12px 16px;
+            border-top: 1px solid #f0f2f5;
+            z-index: 10;
+        }
+        .scrollable-content {
+            height: calc(100vh - 120px);
+            overflow-y: auto;
+            padding-bottom: 60px;
+        }
+    </style>
+
+</head>
+<body class="flex flex-col h-screen max-w-md mx-auto">
+
+    <!-- Header -->
+    <header class="flex items-center px-4 py-3 bg-white border-b border-gray-100 flex-none">
+        <div class="flex-none w-10">
+            <button class="text-2xl text-gray-800">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        <div class="flex-grow text-center">
+            <h1 class="header-title">School/College</h1>
+        </div>
+        <div class="flex-none w-10"></div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow px-4 scrollable-content">
+        <div class="search-input-container">
+            <!-- Empty input box with no placeholder -->
+            <input type="text" class="search-input outline-none">
+        </div>
+    </main>
+
+    <!-- Fixed Footer -->
+    <footer class="sticky-footer">
+        <button class="save-button">
+            Save
+        </button>
+    </footer>
+
+</body>
+</html>

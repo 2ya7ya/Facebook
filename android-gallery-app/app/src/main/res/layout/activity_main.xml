@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F0F2F5">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingHorizontal="16dp"
+            android:background="#FFFFFF">
+
+            <TextView
+                android:id="@+id/screenTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="OKPlus"
+                android:textColor="#0866FF"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/searchButton"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Search"
+                android:src="@android:drawable/ic_menu_search" />
+
+            <ImageButton
+                android:id="@+id/createButton"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Create"
+                android:src="@android:drawable/ic_input_add" />
+        </LinearLayout>
+
+        <ProgressBar
+            android:id="@+id/loading"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:indeterminate="true"
+            android:visibility="gone" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/contentList"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:paddingBottom="12dp" />
+
+        <com.google.android.material.bottomnavigation.BottomNavigationView
+            android:id="@+id/bottomNav"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#FFFFFF"
+            app:labelVisibilityMode="labeled"
+            app:menu="@menu/main_bottom_nav" />
+    </LinearLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

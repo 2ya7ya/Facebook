@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script>window.alert=function(){};</script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Songs</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+        }
+        .search-container {
+            background-color: #f0f2f5;
+            border-radius: 20px;
+        }
+        .song-item {
+            transition: background-color 0.2s;
+        }
+        .song-item:active {
+            background-color: #f0f2f5;
+        }
+        .add-btn {
+            color: #9ca3af;
+            font-size: 24px;
+            cursor: pointer;
+            transition: color 0.2s;
+            border: none;
+            background: none;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .add-btn:hover {
+            color: #4b5563;
+        }
+        .add-btn.active {
+            color: #0a66c2;
+        }
+        .selected-count {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #0a66c2;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            display: none;
+        }
+        .selected-count.show {
+            display: block;
+        }
+        .page {
+            display: none;
+        }
+        .page.active {
+            display: block;
+        }
+        .song-tag {
+            display: inline-block;
+            background-color: #f0f2f5;
+            padding: 8px 12px;
+            border-radius: 20px;
+            margin: 4px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .song-tag .remove-btn {
+            margin-left: 8px;
+            cursor: pointer;
+            color: #65676b;
+        }
+        .song-tag .remove-btn:hover {
+            color: #000;
+        }
+        .add-more-btn {
+            width: 100%;
+            background-color: #f0f2f5;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .add-more-btn:hover {
+            background-color: #e4e6eb;
+        }
+        .save-btn {
+            width: 100%;
+            background-color: #1878F3;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            position: fixed;
+            bottom: 16px;
+            left: 16px;
+            right: 16px;
+            max-width: calc(100% - 32px);
+        }
+        .save-btn:hover {
+            background-color: #0d5ecf;
+        }
+        .songs-container {
+            padding-bottom: 80px;
+        }
+        #done-btn:disabled, #done-btn.merged-disabled {
+            color: #bcc0c4 !important;
+            opacity: 1 !important;
+            pointer-events: none !important;
+            cursor: default !important;
+        }
+    </style>
+
+</head>
+<body class="max-w-md mx-auto min-h-screen pb-20">
+    <!-- Add Songs Page -->
+    <div id="add-songs-page" class="page active">
+        <!-- Header -->
+        <header class="p-4 flex items-center justify-between">
+            <div class="flex items-center">
+                <button class="text-2xl mr-4">
+                    <i class="fa-solid fa-chevron-left"></i>
+                </button>
+                <h1 class="text-2xl font-bold">Add songs</h1>
+            </div>
+            <button id="done-btn" disabled aria-disabled="true" class="text-lg font-bold text-blue-600 hover:text-blue-700 merged-disabled">
+                Done
+            </button>
+        </header>
+
+        <!-- Search Bar -->
+        <div class="px-4 mb-6">
+            <div class="search-container flex items-center px-4 py-2">
+                <i class="fa-solid fa-magnifying-glass text-gray-500 mr-3"></i>
+                <input 
+                    type="text" 
+                    id="search-input"
+                    placeholder="Search songs you like" 
+                    class="bg-transparent border-none outline-none w-full text-lg placeholder-gray-500"
+                >
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="px-4">
+            <h2 id="section-title" class="text-xl font-bold mb-4">Trending</h2>
+            <div id="songs-list" class="space-y-6">
+                <!-- Songs will be injected here -->
+            </div>
+        </div>
+
+        <!-- Selected Count Badge -->
+        <div id="selected-count" class="selected-count">
+            <span id="count-text">0 selected</span>
+        </div>
+    </div>
+
+    <!-- Songs Confirmation Page -->
+    <div id="songs-page" class="page">
+        <!-- Header -->
+        <header class="p-4 flex items-center justify-between">
+            <button id="close-btn" class="text-2xl">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            <h1 class="text-2xl font-bold">Songs</h1>
+            <div style="width: 24px;"></div>
+        </header>
+
+        <!-- Add More Button -->
+        <div class="px-4 mb-6">
+            <button id="add-more-btn" class="add-more-btn">
+                <i class="fa-solid fa-plus"></i>
+                Add more
+            </button>
+        </div>
+
+        <!-- Songs Display -->
+        <div class="px-4 songs-container" id="songs-display">
+            <!-- Selected songs will be displayed here -->
+        </div>
+
+        <!-- Save Button -->
+        <button id="save-btn" class="save-btn">Save</button>
+    </div>
+
+    <script>
+        const trendingSongs = [
+            { name: "Blinding Lights - The Weeknd", count: "50.2M" },
+            { name: "Shape of You - Ed Sheeran", count: "48.1M" },
+            { name: "Someone You Loved - Lewis Capaldi", count: "45.3M" },
+            { name: "Levitating - Dua Lipa", count: "42.8M" },
+            { name: "Heat Waves - Glass Animals", count: "41.5M" },
+            { name: "As It Was - Harry Styles", count: "39.7M" },
+            { name: "Anti-Hero - Taylor Swift", count: "38.2M" }
+        ];
+
+        const allSongs = [
+            ...trendingSongs,
+            { name: "Bohemian Rhapsody - Queen", count: "35.1M" },
+            { name: "Imagine - John Lennon", count: "34.5M" },
+            { name: "Stairway to Heaven - Led Zeppelin", count: "33.8M" },
+            { name: "Hotel California - Eagles", count: "32.9M" },
+            { name: "Like a Rolling Stone - Bob Dylan", count: "31.2M" },
+            { name: "Smells Like Teen Spirit - Nirvana", count: "30.6M" },
+            { name: "Wonderwall - Oasis", count: "29.4M" },
+            { name: "Yesterday - The Beatles", count: "28.7M" },
+            { name: "Sweet Child o' Mine - Guns N' Roses", count: "27.9M" },
+            { name: "Hallelujah - Leonard Cohen", count: "26.3M" },
+            { name: "Billie Jean - Michael Jackson", count: "25.8M" },
+            { name: "Like It or Not - Cardi B", count: "24.2M" },
+            { name: "Uptown Funk - Mark Ronson ft. Bruno Mars", count: "23.5M" },
+            { name: "Tik Tok - Kesha", count: "22.1M" },
+            { name: "Crazy in Love - Beyoncé ft. Jay-Z", count: "21.7M" },
+            { name: "Bad Guy - Billie Eilish", count: "20.9M" },
+            { name: "Drivers License - Olivia Rodrigo", count: "20.2M" },
+            { name: "Good 4 U - Olivia Rodrigo", count: "19.8M" },
+            { name: "Watermelon Sugar - Harry Styles", count: "19.1M" },
+            { name: "Don't Start Now - Dua Lipa", count: "18.5M" },
+            { name: "Peaches - Justin Bieber ft. Daniel Caesar", count: "17.9M" },
+            { name: "Sunroof - Nicky Youre", count: "17.2M" },
+            { name: "Flowers - Miley Cyrus", count: "16.8M" },
+            { name: "Vampire - Olivia Rodrigo", count: "16.1M" },
+            { name: "Cruel Summer - Taylor Swift", count: "15.7M" },
+            { name: "Lover - Taylor Swift", count: "15.2M" },
+            { name: "Cardigan - Taylor Swift", count: "14.9M" },
+            { name: "Willow - Taylor Swift", count: "14.3M" },
+            { name: "Enchanted - Taylor Swift", count: "13.8M" },
+            { name: "Midnight Rain - Taylor Swift", count: "13.2M" },
+            { name: "All Too Well - Taylor Swift", count: "12.9M" },
+            { name: "Love Story - Taylor Swift", count: "12.4M" },
+            { name: "Blank Space - Taylor Swift", count: "12.1M" },
+            { name: "Shake It Off - Taylor Swift", count: "11.7M" },
+            { name: "You Belong With Me - Taylor Swift", count: "11.3M" },
+            { name: "Delicate - Taylor Swift", count: "10.9M" },
+            { name: "Getaway Car - Taylor Swift", count: "10.5M" },
+            { name: "Dress - Taylor Swift", count: "10.1M" },
+            { name: "Gorgeous - Taylor Swift", count: "9.8M" },
+            { name: "Reputation - Taylor Swift", count: "9.4M" },
+            { name: "Treacherous - Taylor Swift", count: "9.1M" },
+            { name: "All of Me - John Legend", count: "8.7M" },
+            { name: "Perfect - Ed Sheeran", count: "8.3M" },
+            { name: "Thinking Out Loud - Ed Sheeran", count: "7.9M" },
+            { name: "Sing - Ed Sheeran", count: "7.5M" },
+            { name: "Castle on the Hill - Ed Sheeran", count: "7.2M" },
+            { name: "Galway Girl - Ed Sheeran", count: "6.9M" },
+            { name: "Shivers - Ed Sheeran", count: "6.5M" },
+            { name: "Bad Habits - Ed Sheeran", count: "6.2M" },
+            { name: "Midnight - Coldplay", count: "5.9M" },
+            { name: "Fix You - Coldplay", count: "5.5M" },
+            { name: "Viva la Vida - Coldplay", count: "5.2M" },
+            { name: "Yellow - Coldplay", count: "4.9M" },
+            { name: "Paradise - Coldplay", count: "4.6M" },
+            { name: "A Sky Full of Stars - Coldplay", count: "4.3M" },
+            { name: "Clocks - Coldplay", count: "4.0M" },
+            { name: "The Scientist - Coldplay", count: "3.8M" },
+            { name: "Adventure of a Lifetime - Coldplay", count: "3.5M" },
+            { name: "Every Teardrop Is a Waterfall - Coldplay", count: "3.2M" },
+            { name: "Someone Like You - Adele", count: "2.9M" },
+            { name: "Rolling in the Deep - Adele", count: "2.7M" },
+            { name: "Hello - Adele", count: "2.5M" },
+            { name: "Set Fire to the Rain - Adele", count: "2.3M" },
+            { name: "Skyfall - Adele", count: "2.1M" },
+            { name: "Easy On Me - Adele", count: "1.9M" },
+            { name: "Oh My God - Adele", count: "1.7M" },
+            { name: "My Little Love - Adele", count: "1.5M" },
+            { name: "I Drink Wine - Adele", count: "1.3M" },
+            { name: "Love Is a Game - Adele", count: "1.1M" }
+        ];
+
+        const songsList = document.getElementById('songs-list');
+        const searchInput = document.getElementById('search-input');
+        const sectionTitle = document.getElementById('section-title');
+        const selectedCountBadge = document.getElementById('selected-count');
+        const countText = document.getElementById('count-text');
+        const addSongsPage = document.getElementById('add-songs-page');
+        const songsPage = document.getElementById('songs-page');
+        const songsDisplay = document.getElementById('songs-display');
+        const doneBtn = document.getElementById('done-btn');
+        
+        let selectedSongs = new Set();
+
+        function updateDoneButton() {
+            if (!doneBtn) return;
+            const hasSelection = selectedSongs.size > 0;
+            doneBtn.disabled = !hasSelection;
+            doneBtn.setAttribute('aria-disabled', hasSelection ? 'false' : 'true');
+            doneBtn.classList.toggle('merged-disabled', !hasSelection);
+        }
+
+        function updateSelectedCount() {
+            if (selectedSongs.size > 0) {
+                countText.textContent = `${selectedSongs.size} selected`;
+                selectedCountBadge.classList.add('show');
+            } else {
+                selectedCountBadge.classList.remove('show');
+            }
+            updateDoneButton();
+        }
+
+        function toggleSong(songName, button) {
+            if (selectedSongs.has(songName)) {
+                selectedSongs.delete(songName);
+                button.classList.remove('active');
+                button.innerHTML = '<i class="fa-solid fa-circle-plus"></i>';
+            } else {
+                selectedSongs.add(songName);
+                button.classList.add('active');
+                button.innerHTML = '<i class="fa-solid fa-circle-check"></i>';
+            }
+            updateSelectedCount();
+        }
+
+        function renderSongs(songs) {
+            songsList.innerHTML = '';
+            songs.forEach(song => {
+                const item = document.createElement('div');
+                item.className = 'song-item flex justify-between items-center py-1';
+                const isSelected = selectedSongs.has(song.name);
+                const buttonClass = isSelected ? 'add-btn active' : 'add-btn';
+                const iconClass = isSelected ? 'fa-solid fa-circle-check' : 'fa-solid fa-circle-plus';
+                
+                item.innerHTML = `
+                    <div>
+                        <div class="text-base font-bold">${song.name}</div>
+                        <div class="text-gray-500 text-xs">Added by ${song.count} others</div>
+                    </div>
+                    <button class="${buttonClass}">
+                        <i class="${iconClass}"></i>
+                    </button>
+                `;
+                
+                const button = item.querySelector('button');
+                button.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleSong(song.name, button);
+                });
+                
+                songsList.appendChild(item);
+            });
+        }
+
+        function displaySelectedSongs() {
+            songsDisplay.innerHTML = '';
+            selectedSongs.forEach(song => {
+                const tag = document.createElement('div');
+                tag.className = 'song-tag';
+                tag.innerHTML = `
+                    ${song}
+                    <span class="remove-btn" data-song="${song}">×</span>
+                `;
+                tag.querySelector('.remove-btn').addEventListener('click', () => {
+                    selectedSongs.delete(song);
+                    displaySelectedSongs();
+                    updateSelectedCount();
+                    const q = searchInput.value.toLowerCase().trim();
+                    renderSongs(q ? allSongs.filter(s => s.name.toLowerCase().includes(q)) : trendingSongs);
+                });
+                songsDisplay.appendChild(tag);
+            });
+        }
+
+        function showPage(page) {
+            addSongsPage.classList.remove('active');
+            songsPage.classList.remove('active');
+            page.classList.add('active');
+        }
+
+        // Initial render
+        renderSongs(trendingSongs);
+        updateDoneButton();
+
+        // Done button handler
+        doneBtn.addEventListener('click', (e) => {
+            updateDoneButton();
+            if (selectedSongs.size === 0) {
+                e.preventDefault();
+                return;
+            }
+            displaySelectedSongs();
+            showPage(songsPage);
+        });
+
+        // Close button handler
+        document.getElementById('close-btn').addEventListener('click', () => {
+            showPage(addSongsPage);
+        });
+
+        // Add more button handler
+        document.getElementById('add-more-btn').addEventListener('click', () => {
+            showPage(addSongsPage);
+        });
+
+        // Save button handler
+        document.getElementById('save-btn').addEventListener('click', (e) => {
+            e.preventDefault();
+            const songsList = Array.from(selectedSongs);
+            try {
+                const all = JSON.parse(localStorage.getItem('mergedProfileData') || '{}');
+                all['add_songs.html'] = {
+                    values: songsList,
+                    text: songsList.join(', '),
+                    updatedAt: Date.now()
+                };
+                localStorage.setItem('mergedProfileData', JSON.stringify(all));
+            } catch (err) {}
+            if (window.parent && window.parent.openPage) {
+                window.parent.openPage('edit_profile.html', false);
+            }
+        });
+
+        // Search functionality
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            if (query === '') {
+                sectionTitle.textContent = 'Trending';
+                renderSongs(trendingSongs);
+            } else {
+                sectionTitle.textContent = 'Search results';
+                const filtered = allSongs.filter(song => 
+                    song.name.toLowerCase().includes(query)
+                );
+                renderSongs(filtered);
+            }
+        });
+    </script>
+</body>
+</html>

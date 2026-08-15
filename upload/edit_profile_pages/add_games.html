@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script>window.alert=function(){};</script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Games</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+        }
+        .search-container {
+            background-color: #f0f2f5;
+            border-radius: 20px;
+        }
+        .game-item {
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+        }
+        .game-item:active {
+            background-color: #f0f2f5;
+        }
+        .game-image {
+            width: 48px;
+            height: 64px;
+            border-radius: 6px;
+            object-fit: cover;
+            flex-shrink: 0;
+            background-color: #e4e6eb;
+        }
+        .game-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .game-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin: 0;
+        }
+        .game-meta {
+            font-size: 12px;
+            color: #65676b;
+            margin: 2px 0 0 0;
+        }
+        .add-btn {
+            color: #9ca3af;
+            font-size: 20px;
+            cursor: pointer;
+            transition: color 0.2s;
+            border: none;
+            background: none;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .add-btn:hover {
+            color: #4b5563;
+        }
+        .add-btn.active {
+            color: #0a66c2;
+        }
+        .selected-count {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #0a66c2;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            display: none;
+        }
+        .selected-count.show {
+            display: block;
+        }
+        .page {
+            display: none;
+        }
+        .page.active {
+            display: block;
+        }
+        .game-tag {
+            display: inline-block;
+            background-color: #f0f2f5;
+            padding: 6px 10px;
+            border-radius: 16px;
+            margin: 3px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .game-tag .remove-btn {
+            margin-left: 6px;
+            cursor: pointer;
+            color: #65676b;
+        }
+        .game-tag .remove-btn:hover {
+            color: #000;
+        }
+        .add-more-btn {
+            width: 100%;
+            background-color: #f0f2f5;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .add-more-btn:hover {
+            background-color: #e4e6eb;
+        }
+        .save-btn {
+            width: 100%;
+            background-color: #1878F3;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            position: fixed;
+            bottom: 16px;
+            left: 16px;
+            right: 16px;
+            max-width: calc(100% - 32px);
+        }
+        .save-btn:hover {
+            background-color: #0d5ecf;
+        }
+        .games-container {
+            padding-bottom: 80px;
+        }
+        .games-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+    </style>
+
+</head>
+<body class="max-w-md mx-auto min-h-screen pb-20">
+    <!-- Add Games Page -->
+    <div id="add-games-page" class="page active">
+        <!-- Header -->
+        <header class="p-4 flex items-center justify-between">
+            <div class="flex items-center">
+                <button class="text-2xl mr-4">
+                    <i class="fa-solid fa-chevron-left"></i>
+                </button>
+                <h1 class="text-2xl font-bold">Add games</h1>
+            </div>
+            <button id="done-btn" class="text-lg font-bold text-blue-600 hover:text-blue-700">
+                Done
+            </button>
+        </header>
+
+        <!-- Search Bar -->
+        <div class="px-4 mb-6">
+            <div class="search-container flex items-center px-4 py-2">
+                <i class="fa-solid fa-magnifying-glass text-gray-500 mr-3"></i>
+                <input 
+                    type="text" 
+                    id="search-input"
+                    placeholder="Search games" 
+                    class="bg-transparent border-none outline-none w-full text-lg placeholder-gray-500"
+                >
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="px-4">
+            <div id="games-list" class="games-list"></div>
+        </div>
+
+        <!-- Selected Count Badge -->
+        <div id="selected-count" class="selected-count">
+            <span id="count-text">0 selected</span>
+        </div>
+    </div>
+
+    <!-- Games Confirmation Page -->
+    <div id="games-page" class="page">
+        <!-- Header -->
+        <header class="p-4 flex items-center justify-between">
+            <button id="close-btn" class="text-2xl">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            <h1 class="text-2xl font-bold">Games</h1>
+            <div style="width: 24px;"></div>
+        </header>
+
+        <!-- Add More Button -->
+        <div class="px-4 mb-6">
+            <button id="add-more-btn" class="add-more-btn">
+                <i class="fa-solid fa-plus"></i>
+                Add more
+            </button>
+        </div>
+
+        <!-- Games Display -->
+        <div class="px-4 games-container" id="games-display">
+            <!-- Selected games will be displayed here -->
+        </div>
+
+        <!-- Save Button -->
+        <button id="save-btn" class="save-btn">Save</button>
+    </div>
+
+    <script>
+        const gamesList = document.getElementById('games-list');
+        const searchInput = document.getElementById('search-input');
+        const selectedCountBadge = document.getElementById('selected-count');
+        const countText = document.getElementById('count-text');
+        const addGamesPage = document.getElementById('add-games-page');
+        const gamesPage = document.getElementById('games-page');
+        const gamesDisplay = document.getElementById('games-display');
+        
+        let selectedGames = new Set();
+        let allGames = [];
+        let trendingGames = [];
+
+        // 500+ Popular games with genres and years
+        const gamesData = [
+            // Action
+            { name: "Grand Theft Auto V", genre: "Action", year: "2013" },
+            { name: "Red Dead Redemption 2", genre: "Action", year: "2018" },
+            { name: "Assassins Creed Odyssey", genre: "Action", year: "2018" },
+            { name: "Assassins Creed Valhalla", genre: "Action", year: "2020" },
+            { name: "Uncharted 4", genre: "Action", year: "2016" },
+            { name: "The Last of Us", genre: "Action", year: "2013" },
+            { name: "The Last of Us Part II", genre: "Action", year: "2020" },
+            { name: "God of War", genre: "Action", year: "2018" },
+            { name: "God of War Ragnarok", genre: "Action", year: "2022" },
+            { name: "Tomb Raider", genre: "Action", year: "2013" },
+            { name: "Rise of the Tomb Raider", genre: "Action", year: "2015" },
+            { name: "Shadow of the Tomb Raider", genre: "Action", year: "2018" },
+            { name: "Horizon Zero Dawn", genre: "Action", year: "2017" },
+            { name: "Horizon Forbidden West", genre: "Action", year: "2022" },
+            { name: "Ghost of Tsushima", genre: "Action", year: "2020" },
+            { name: "Sekiro Shadows Die Twice", genre: "Action", year: "2019" },
+            { name: "Elden Ring", genre: "Action", year: "2022" },
+            { name: "Dark Souls III", genre: "Action", year: "2016" },
+            { name: "Bloodborne", genre: "Action", year: "2015" },
+            { name: "Devil May Cry 5", genre: "Action", year: "2019" },
+            { name: "Bayonetta 2", genre: "Action", year: "2014" },
+            { name: "Metal Gear Solid V", genre: "Action", year: "2015" },
+            { name: "Hitman 3", genre: "Action", year: "2021" },
+            { name: "Splinter Cell Conviction", genre: "Action", year: "2010" },
+            { name: "Far Cry 6", genre: "Action", year: "2021" },
+            { name: "Far Cry 5", genre: "Action", year: "2018" },
+            { name: "Borderlands 3", genre: "Action", year: "2019" },
+            { name: "Destiny 2", genre: "Action", year: "2017" },
+            { name: "Warframe", genre: "Action", year: "2013" },
+            { name: "Apex Legends", genre: "Action", year: "2019" },
+            
+            // Adventure
+            { name: "The Legend of Zelda Breath of the Wild", genre: "Adventure", year: "2017" },
+            { name: "The Legend of Zelda Tears of the Kingdom", genre: "Adventure", year: "2023" },
+            { name: "The Legend of Zelda Skyward Sword", genre: "Adventure", year: "2011" },
+            { name: "The Legend of Zelda Twilight Princess", genre: "Adventure", year: "2006" },
+            { name: "The Legend of Zelda Ocarina of Time", genre: "Adventure", year: "1998" },
+            { name: "The Legend of Zelda A Link to the Past", genre: "Adventure", year: "1991" },
+            { name: "The Legend of Zelda Link's Awakening", genre: "Adventure", year: "2019" },
+            { name: "Uncharted Lost Legacy", genre: "Adventure", year: "2017" },
+            { name: "Uncharted 3", genre: "Adventure", year: "2011" },
+            { name: "Uncharted 2", genre: "Adventure", year: "2009" },
+            { name: "Uncharted Drake's Fortune", genre: "Adventure", year: "2007" },
+            { name: "Journey", genre: "Adventure", year: "2012" },
+            { name: "Abzu", genre: "Adventure", year: "2016" },
+            { name: "Inside", genre: "Adventure", year: "2016" },
+            { name: "Limbo", genre: "Adventure", year: "2010" },
+            { name: "Outer Wilds", genre: "Adventure", year: "2019" },
+            { name: "A Short Hike", genre: "Adventure", year: "2019" },
+            { name: "Firewatch", genre: "Adventure", year: "2016" },
+            { name: "What Remains of Edith Finch", genre: "Adventure", year: "2017" },
+            { name: "Gone Home", genre: "Adventure", year: "2013" },
+            
+            // RPG
+            { name: "The Witcher 3 Wild Hunt", genre: "RPG", year: "2015" },
+            { name: "Final Fantasy VII Remake", genre: "RPG", year: "2020" },
+            { name: "Final Fantasy XV", genre: "RPG", year: "2016" },
+            { name: "Final Fantasy XIV", genre: "RPG", year: "2010" },
+            { name: "Dragon's Dogma 2", genre: "RPG", year: "2024" },
+            { name: "Dragon Age Inquisition", genre: "RPG", year: "2014" },
+            { name: "Mass Effect Legendary Edition", genre: "RPG", year: "2021" },
+            { name: "The Elder Scrolls V Skyrim", genre: "RPG", year: "2011" },
+            { name: "The Elder Scrolls Online", genre: "RPG", year: "2014" },
+            { name: "Baldur's Gate 3", genre: "RPG", year: "2023" },
+            { name: "Baldur's Gate Dark Alliance", genre: "RPG", year: "2001" },
+            { name: "Diablo IV", genre: "RPG", year: "2023" },
+            { name: "Diablo III", genre: "RPG", year: "2012" },
+            { name: "Path of Exile", genre: "RPG", year: "2013" },
+            { name: "Torchlight III", genre: "RPG", year: "2020" },
+            { name: "Monster Hunter World", genre: "RPG", year: "2018" },
+            { name: "Monster Hunter Rise", genre: "RPG", year: "2021" },
+            { name: "Dark Souls", genre: "RPG", year: "2011" },
+            { name: "Dark Souls II", genre: "RPG", year: "2014" },
+            { name: "Persona 5", genre: "RPG", year: "2016" },
+            { name: "Persona 5 Royal", genre: "RPG", year: "2019" },
+            { name: "Fire Emblem Three Houses", genre: "RPG", year: "2019" },
+            { name: "Fire Emblem Awakening", genre: "RPG", year: "2012" },
+            { name: "Pokémon Scarlet", genre: "RPG", year: "2022" },
+            { name: "Pokémon Violet", genre: "RPG", year: "2022" },
+            { name: "Pokémon Sword", genre: "RPG", year: "2019" },
+            { name: "Pokémon Shield", genre: "RPG", year: "2019" },
+            { name: "Pokémon Legends Arceus", genre: "RPG", year: "2022" },
+            { name: "Kingdom Hearts III", genre: "RPG", year: "2019" },
+            { name: "Tales of Arise", genre: "RPG", year: "2021" },
+            
+            // Sports
+            { name: "FIFA 24", genre: "Sports", year: "2023" },
+            { name: "Madden NFL 24", genre: "Sports", year: "2023" },
+            { name: "NBA 2K24", genre: "Sports", year: "2023" },
+            { name: "NHL 24", genre: "Sports", year: "2023" },
+            { name: "F1 24", genre: "Sports", year: "2024" },
+            { name: "Gran Turismo 7", genre: "Sports", year: "2022" },
+            { name: "Forza Motorsport", genre: "Sports", year: "2023" },
+            { name: "Forza Horizon 5", genre: "Sports", year: "2021" },
+            { name: "Forza Horizon 4", genre: "Sports", year: "2018" },
+            { name: "Need for Speed Unbound", genre: "Sports", year: "2022" },
+            { name: "Need for Speed Heat", genre: "Sports", year: "2019" },
+            { name: "Need for Speed Payback", genre: "Sports", year: "2017" },
+            { name: "Dirt Rally 2.0", genre: "Sports", year: "2019" },
+            { name: "WRC 9", genre: "Sports", year: "2021" },
+            { name: "Project CARS 3", genre: "Sports", year: "2020" },
+            { name: "iRacing", genre: "Sports", year: "2008" },
+            { name: "Tony Hawks Pro Skater 1+2", genre: "Sports", year: "2020" },
+            { name: "Skate", genre: "Sports", year: "2007" },
+            { name: "Skate 2", genre: "Sports", year: "2009" },
+            { name: "Skate 3", genre: "Sports", year: "2010" },
+            { name: "Rocket League", genre: "Sports", year: "2015" },
+            { name: "NBA Jam", genre: "Sports", year: "2010" },
+            { name: "WWE 2K24", genre: "Sports", year: "2024" },
+            { name: "UFC 5", genre: "Sports", year: "2024" },
+            { name: "Fight Night Champion", genre: "Sports", year: "2011" },
+            { name: "Tekken 8", genre: "Sports", year: "2024" },
+            { name: "Street Fighter 6", genre: "Sports", year: "2023" },
+            { name: "Mortal Kombat 1", genre: "Sports", year: "2023" },
+            { name: "Super Smash Bros Ultimate", genre: "Sports", year: "2018" },
+            { name: "Super Smash Bros Melee", genre: "Sports", year: "2001" },
+            
+            // Strategy
+            { name: "StarCraft II", genre: "Strategy", year: "2010" },
+            { name: "Warcraft III Reforged", genre: "Strategy", year: "2020" },
+            { name: "Total War Warhammer III", genre: "Strategy", year: "2022" },
+            { name: "Total War Three Kingdoms", genre: "Strategy", year: "2019" },
+            { name: "Civilization VI", genre: "Strategy", year: "2016" },
+            { name: "Civilization V", genre: "Strategy", year: "2010" },
+            { name: "XCOM 2", genre: "Strategy", year: "2016" },
+            { name: "XCOM Enemy Unknown", genre: "Strategy", year: "2012" },
+            { name: "Crusader Kings III", genre: "Strategy", year: "2020" },
+            { name: "Europa Universalis IV", genre: "Strategy", year: "2013" },
+            { name: "Hearts of Iron IV", genre: "Strategy", year: "2016" },
+            { name: "Stellaris", genre: "Strategy", year: "2016" },
+            { name: "Endless Space 2", genre: "Strategy", year: "2017" },
+            { name: "Endless Legend", genre: "Strategy", year: "2014" },
+            { name: "Age of Empires IV", genre: "Strategy", year: "2021" },
+            { name: "Age of Empires III", genre: "Strategy", year: "2005" },
+            { name: "Age of Empires II", genre: "Strategy", year: "1999" },
+            { name: "They Are Billions", genre: "Strategy", year: "2019" },
+            { name: "They Are Billions", genre: "Strategy", year: "2019" },
+            { name: "Frostpunk", genre: "Strategy", year: "2018" },
+            { name: "This War of Mine", genre: "Strategy", year: "2014" },
+            { name: "Tropico 6", genre: "Strategy", year: "2019" },
+            { name: "Tropico 5", genre: "Strategy", year: "2014" },
+            { name: "Planet Coaster", genre: "Strategy", year: "2016" },
+            { name: "Planet Zoo", genre: "Strategy", year: "2019" },
+            { name: "Cities Skylines", genre: "Strategy", year: "2015" },
+            { name: "Sim City", genre: "Strategy", year: "2013" },
+            { name: "The Sims 4", genre: "Strategy", year: "2014" },
+            { name: "The Sims 3", genre: "Strategy", year: "2009" },
+            { name: "Stardew Valley", genre: "Strategy", year: "2016" },
+            
+            // Puzzle
+            { name: "Portal 2", genre: "Puzzle", year: "2011" },
+            { name: "Portal", genre: "Puzzle", year: "2007" },
+            { name: "The Witness", genre: "Puzzle", year: "2016" },
+            { name: "Tetris Effect", genre: "Puzzle", year: "2018" },
+            { name: "Puyo Puyo Tetris", genre: "Puzzle", year: "2017" },
+            { name: "Baba Is You", genre: "Puzzle", year: "2019" },
+            { name: "Return of the Obra Dinn", genre: "Puzzle", year: "2018" },
+            { name: "The Talos Principle", genre: "Puzzle", year: "2014" },
+            { name: "Thinkertoys", genre: "Puzzle", year: "2020" },
+            { name: "Opus Magnum", genre: "Puzzle", year: "2017" },
+            { name: "Zachtronics", genre: "Puzzle", year: "2015" },
+            { name: "Human Resource Machine", genre: "Puzzle", year: "2015" },
+            { name: "7 Billion Humans", genre: "Puzzle", year: "2019" },
+            { name: "The Incredible Machine", genre: "Puzzle", year: "1992" },
+            { name: "Lemmings", genre: "Puzzle", year: "1991" },
+            { name: "Candy Crush Saga", genre: "Puzzle", year: "2012" },
+            { name: "Angry Birds", genre: "Puzzle", year: "2009" },
+            { name: "Cut the Rope", genre: "Puzzle", year: "2010" },
+            { name: "Monument Valley", genre: "Puzzle", year: "2014" },
+            { name: "Monument Valley 2", genre: "Puzzle", year: "2017" },
+            { name: "Threes", genre: "Puzzle", year: "2014" },
+            { name: "2048", genre: "Puzzle", year: "2014" },
+            { name: "Sudoku", genre: "Puzzle", year: "2005" },
+            { name: "Picross", genre: "Puzzle", year: "1995" },
+            { name: "Nonogram", genre: "Puzzle", year: "1987" },
+            { name: "Minesweeper", genre: "Puzzle", year: "1989" },
+            { name: "Solitaire", genre: "Puzzle", year: "1990" },
+            { name: "FreeCell", genre: "Puzzle", year: "1995" },
+            { name: "Mahjong", genre: "Puzzle", year: "1920" },
+            { name: "Dominoes", genre: "Puzzle", year: "1300" },
+            
+            // Shooter
+            { name: "Call of Duty Modern Warfare III", genre: "Shooter", year: "2023" },
+            { name: "Call of Duty Black Ops Cold War", genre: "Shooter", year: "2020" },
+            { name: "Call of Duty Warzone", genre: "Shooter", year: "2020" },
+            { name: "Battlefield 2042", genre: "Shooter", year: "2021" },
+            { name: "Battlefield V", genre: "Shooter", year: "2018" },
+            { name: "Battlefield 4", genre: "Shooter", year: "2013" },
+            { name: "Counter-Strike 2", genre: "Shooter", year: "2023" },
+            { name: "Counter-Strike Global Offensive", genre: "Shooter", year: "2012" },
+            { name: "Valorant", genre: "Shooter", year: "2020" },
+            { name: "Overwatch 2", genre: "Shooter", year: "2022" },
+            { name: "Overwatch", genre: "Shooter", year: "2016" },
+            { name: "Team Fortress 2", genre: "Shooter", year: "2007" },
+            { name: "Halo Infinite", genre: "Shooter", year: "2021" },
+            { name: "Halo 5 Guardians", genre: "Shooter", year: "2015" },
+            { name: "Halo Combat Evolved", genre: "Shooter", year: "2001" },
+            { name: "Halo 2", genre: "Shooter", year: "2004" },
+            { name: "Halo 3", genre: "Shooter", year: "2007" },
+            { name: "Halo Reach", genre: "Shooter", year: "2010" },
+            { name: "Doom Eternal", genre: "Shooter", year: "2020" },
+            { name: "Doom 2016", genre: "Shooter", year: "2016" },
+            { name: "Doom", genre: "Shooter", year: "1993" },
+            { name: "Doom II", genre: "Shooter", year: "1994" },
+            { name: "Quake Champions", genre: "Shooter", year: "2017" },
+            { name: "Quake III Arena", genre: "Shooter", year: "1999" },
+            { name: "Unreal Tournament", genre: "Shooter", year: "1999" },
+            { name: "Half-Life 2", genre: "Shooter", year: "2004" },
+            { name: "Half-Life Alyx", genre: "Shooter", year: "2020" },
+            { name: "Bioshock Infinite", genre: "Shooter", year: "2013" },
+            { name: "Bioshock", genre: "Shooter", year: "2007" },
+            { name: "Crysis", genre: "Shooter", year: "2007" },
+            
+            // Racing
+            { name: "Mario Kart 8 Deluxe", genre: "Racing", year: "2014" },
+            { name: "Mario Kart 8", genre: "Racing", year: "2014" },
+            { name: "Mario Kart 7", genre: "Racing", year: "2011" },
+            { name: "Mario Kart Wii", genre: "Racing", year: "2008" },
+            { name: "Mario Kart Double Dash", genre: "Racing", year: "2003" },
+            { name: "Mario Kart 64", genre: "Racing", year: "1996" },
+            { name: "Mario Kart Super Circuit", genre: "Racing", year: "2001" },
+            { name: "Sonic Racing", genre: "Racing", year: "2019" },
+            { name: "Sonic All-Stars Racing Transformed", genre: "Racing", year: "2012" },
+            { name: "Crash Team Racing Nitro-Fueled", genre: "Racing", year: "2019" },
+            { name: "Crash Team Racing", genre: "Racing", year: "1999" },
+            { name: "Diddy Kong Racing", genre: "Racing", year: "1997" },
+            { name: "Wipeout Omega Collection", genre: "Racing", year: "2017" },
+            { name: "Wipeout 2048", genre: "Racing", year: "2012" },
+            { name: "F-Zero GX", genre: "Racing", year: "2003" },
+            { name: "F-Zero X", genre: "Racing", year: "1998" },
+            { name: "Burnout Paradise", genre: "Racing", year: "2008" },
+            { name: "Burnout Revenge", genre: "Racing", year: "2005" },
+            { name: "Burnout 3 Takedown", genre: "Racing", year: "2004" },
+            { name: "Ridge Racer", genre: "Racing", year: "1994" },
+            { name: "Daytona USA", genre: "Racing", year: "1993" },
+            { name: "OutRun", genre: "Racing", year: "1986" },
+            { name: "Pole Position", genre: "Racing", year: "1982" },
+            { name: "Pac-Man", genre: "Racing", year: "1980" },
+            { name: "Donkey Kong", genre: "Racing", year: "1981" },
+            { name: "Galaga", genre: "Racing", year: "1981" },
+            { name: "Space Invaders", genre: "Racing", year: "1978" },
+            { name: "Asteroids", genre: "Racing", year: "1979" },
+            { name: "Centipede", genre: "Racing", year: "1980" },
+            { name: "Missile Command", genre: "Racing", year: "1980" },
+            
+            // Platformer
+            { name: "Super Mario Bros Wonder", genre: "Platformer", year: "2023" },
+            { name: "Super Mario Bros 35", genre: "Platformer", year: "2020" },
+            { name: "Super Mario 3D World", genre: "Platformer", year: "2013" },
+            { name: "Super Mario Odyssey", genre: "Platformer", year: "2017" },
+            { name: "Super Mario Galaxy", genre: "Platformer", year: "2007" },
+            { name: "Super Mario Galaxy 2", genre: "Platformer", year: "2010" },
+            { name: "Super Mario Sunshine", genre: "Platformer", year: "2002" },
+            { name: "Super Mario 64", genre: "Platformer", year: "1996" },
+            { name: "Super Mario World", genre: "Platformer", year: "1990" },
+            { name: "Super Mario Bros 3", genre: "Platformer", year: "1990" },
+            { name: "Super Mario Bros", genre: "Platformer", year: "1985" },
+            { name: "Donkey Kong Country Tropical Freeze", genre: "Platformer", year: "2014" },
+            { name: "Donkey Kong Country Returns", genre: "Platformer", year: "2010" },
+            { name: "Donkey Kong Country 2", genre: "Platformer", year: "1995" },
+            { name: "Donkey Kong Country", genre: "Platformer", year: "1994" },
+            { name: "Kirby Star Allies", genre: "Platformer", year: "2018" },
+            { name: "Kirby Planet Robobot", genre: "Platformer", year: "2016" },
+            { name: "Kirby Triple Deluxe", genre: "Platformer", year: "2014" },
+            { name: "Kirby Super Star", genre: "Platformer", year: "1996" },
+            { name: "Kirby's Dream Land", genre: "Platformer", year: "1992" },
+            { name: "Sonic the Hedgehog", genre: "Platformer", year: "1991" },
+            { name: "Sonic the Hedgehog 2", genre: "Platformer", year: "1992" },
+            { name: "Sonic the Hedgehog 3", genre: "Platformer", year: "1994" },
+            { name: "Sonic Adventure", genre: "Platformer", year: "1999" },
+            { name: "Sonic Adventure 2", genre: "Platformer", year: "2001" },
+            { name: "Mega Man", genre: "Platformer", year: "1987" },
+            { name: "Mega Man 2", genre: "Platformer", year: "1988" },
+            { name: "Mega Man X", genre: "Platformer", year: "1993" },
+            { name: "Mega Man X2", genre: "Platformer", year: "1994" },
+            { name: "Castlevania", genre: "Platformer", year: "1987" },
+            
+            // Horror
+            { name: "Resident Evil 4 Remake", genre: "Horror", year: "2023" },
+            { name: "Resident Evil Village", genre: "Horror", year: "2021" },
+            { name: "Resident Evil 7", genre: "Horror", year: "2017" },
+            { name: "Resident Evil 6", genre: "Horror", year: "2012" },
+            { name: "Resident Evil 5", genre: "Horror", year: "2009" },
+            { name: "Resident Evil 4", genre: "Horror", year: "2005" },
+            { name: "Silent Hill 2 Remake", genre: "Horror", year: "2024" },
+            { name: "Silent Hill", genre: "Horror", year: "1999" },
+            { name: "Silent Hill 2", genre: "Horror", year: "2001" },
+            { name: "Silent Hill 3", genre: "Horror", year: "2003" },
+            { name: "Dead Space Remake", genre: "Horror", year: "2023" },
+            { name: "Dead Space", genre: "Horror", year: "2008" },
+            { name: "Dead Space 2", genre: "Horror", year: "2011" },
+            { name: "Dead Space 3", genre: "Horror", year: "2013" },
+            { name: "Amnesia The Dark Descent", genre: "Horror", year: "2010" },
+            { name: "Amnesia A Machine for Pigs", genre: "Horror", year: "2013" },
+            { name: "Outlast", genre: "Horror", year: "2013" },
+            { name: "Outlast 2", genre: "Horror", year: "2017" },
+            { name: "Outlast Trials", genre: "Horror", year: "2023" },
+            { name: "Layers of Fear", genre: "Horror", year: "2016" },
+            { name: "Layers of Fear 2", genre: "Horror", year: "2019" },
+            { name: "Phasmophobia", genre: "Horror", year: "2021" },
+            { name: "The Forest", genre: "Horror", year: "2018" },
+            { name: "Sons of the Forest", genre: "Horror", year: "2023" },
+            { name: "Grounded", genre: "Horror", year: "2022" },
+            { name: "Subnautica", genre: "Horror", year: "2018" },
+            { name: "Subnautica Below Zero", genre: "Horror", year: "2021" },
+            { name: "Five Nights at Freddy's", genre: "Horror", year: "2014" },
+            { name: "Five Nights at Freddy's 2", genre: "Horror", year: "2014" },
+            { name: "Bendy and the Ink Machine", genre: "Horror", year: "2017" },
+            
+            // Indie
+            { name: "Hollow Knight Silksong", genre: "Indie", year: "2024" },
+            { name: "Hollow Knight", genre: "Indie", year: "2017" },
+            { name: "Celeste", genre: "Indie", year: "2018" },
+            { name: "Cuphead", genre: "Indie", year: "2017" },
+            { name: "Ori and the Blind Forest", genre: "Indie", year: "2015" },
+            { name: "Ori and the Will of the Wisps", genre: "Indie", year: "2020" },
+            { name: "Gris", genre: "Indie", year: "2018" },
+            { name: "Hyper Light Drifter", genre: "Indie", year: "2015" },
+            { name: "Katana ZERO", genre: "Indie", year: "2019" },
+            { name: "Hades", genre: "Indie", year: "2020" },
+            { name: "Hadestown", genre: "Indie", year: "2019" },
+            { name: "Spiritfarer", genre: "Indie", year: "2020" },
+            { name: "A Short Hike", genre: "Indie", year: "2019" },
+            { name: "Unpacking", genre: "Indie", year: "2021" },
+            { name: "Disco Elysium", genre: "Indie", year: "2019" },
+            { name: "Kentucky Route Zero", genre: "Indie", year: "2020" },
+            { name: "Night in the Woods", genre: "Indie", year: "2017" },
+            { name: "Oxenfree", genre: "Indie", year: "2016" },
+            { name: "Thimbleweed Park", genre: "Indie", year: "2017" },
+            { name: "Undertale", genre: "Indie", year: "2015" },
+            { name: "Deltarune", genre: "Indie", year: "2018" },
+            { name: "Itch.io", genre: "Indie", year: "2011" },
+            { name: "Minecraft", genre: "Indie", year: "2011" },
+            { name: "Terraria", genre: "Indie", year: "2011" },
+            { name: "Stardew Valley", genre: "Indie", year: "2016" },
+            { name: "Slime Rancher", genre: "Indie", year: "2017" },
+            { name: "Slime Rancher 2", genre: "Indie", year: "2022" },
+            { name: "Valheim", genre: "Indie", year: "2021" },
+            { name: "Core Keeper", genre: "Indie", year: "2022" },
+            { name: "Noita", genre: "Indie", year: "2020" },
+            
+            // Simulation
+            { name: "Microsoft Flight Simulator", genre: "Simulation", year: "2020" },
+            { name: "X-Plane 12", genre: "Simulation", year: "2023" },
+            { name: "DCS World", genre: "Simulation", year: "2011" },
+            { name: "Farming Simulator 23", genre: "Simulation", year: "2022" },
+            { name: "Farming Simulator 22", genre: "Simulation", year: "2021" },
+            { name: "Euro Truck Simulator 2", genre: "Simulation", year: "2012" },
+            { name: "American Truck Simulator", genre: "Simulation", year: "2016" },
+            { name: "Bus Simulator 21", genre: "Simulation", year: "2021" },
+            { name: "Train Simulator", genre: "Simulation", year: "2009" },
+            { name: "Ship Simulator Extremes", genre: "Simulation", year: "2010" },
+            { name: "Surgeon Simulator", genre: "Simulation", year: "2013" },
+            { name: "Goat Simulator", genre: "Simulation", year: "2014" },
+            { name: "Viscera Cleanup Detail", genre: "Simulation", year: "2015" },
+            { name: "Cooking Mama", genre: "Simulation", year: "2006" },
+            { name: "Overcooked", genre: "Simulation", year: "2016" },
+            { name: "Overcooked 2", genre: "Simulation", year: "2018" },
+            { name: "Moving Out", genre: "Simulation", year: "2020" },
+            { name: "Unpacking", genre: "Simulation", year: "2021" },
+            { name: "Diner Dash", genre: "Simulation", year: "2004" },
+            { name: "Tycoon City New York", genre: "Simulation", year: "2006" },
+            { name: "RollerCoaster Tycoon", genre: "Simulation", year: "1999" },
+            { name: "RollerCoaster Tycoon 2", genre: "Simulation", year: "2002" },
+            { name: "RollerCoaster Tycoon 3", genre: "Simulation", year: "2004" },
+            { name: "Theme Hospital", genre: "Simulation", year: "1997" },
+            { name: "Two Point Hospital", genre: "Simulation", year: "2018" },
+            { name: "Two Point Campus", genre: "Simulation", year: "2022" },
+            { name: "Dungeon Keeper", genre: "Simulation", year: "1997" },
+            { name: "Dungeon Keeper 2", genre: "Simulation", year: "1999" },
+            { name: "Warcraft Orcs and Humans", genre: "Simulation", year: "1994" },
+            { name: "Warcraft II", genre: "Simulation", year: "1995" },
+            
+            // MMO
+            { name: "World of Warcraft", genre: "MMO", year: "2004" },
+            { name: "Final Fantasy XIV", genre: "MMO", year: "2010" },
+            { name: "Guild Wars 2", genre: "MMO", year: "2012" },
+            { name: "Elder Scrolls Online", genre: "MMO", year: "2014" },
+            { name: "Black Desert Online", genre: "MMO", year: "2014" },
+            { name: "Lost Ark", genre: "MMO", year: "2019" },
+            { name: "New World", genre: "MMO", year: "2021" },
+            { name: "Ashes of Creation", genre: "MMO", year: "2023" },
+            { name: "Star Wars The Old Republic", genre: "MMO", year: "2011" },
+            { name: "Star Wars Galaxies", genre: "MMO", year: "2003" },
+            { name: "EverQuest", genre: "MMO", year: "1999" },
+            { name: "EverQuest 2", genre: "MMO", year: "2004" },
+            { name: "Ultima Online", genre: "MMO", year: "1997" },
+            { name: "Lineage", genre: "MMO", year: "1998" },
+            { name: "Lineage 2", genre: "MMO", year: "2003" },
+            { name: "Runescape", genre: "MMO", year: "2001" },
+            { name: "Old School Runescape", genre: "MMO", year: "2013" },
+            { name: "Albion Online", genre: "MMO", year: "2017" },
+            { name: "Archeage", genre: "MMO", year: "2013" },
+            { name: "Blade and Soul", genre: "MMO", year: "2012" },
+            { name: "Aion", genre: "MMO", year: "2008" },
+            { name: "Tera", genre: "MMO", year: "2011" },
+            { name: "Rift", genre: "MMO", year: "2011" },
+            { name: "Wildstar", genre: "MMO", year: "2014" },
+            { name: "Neverwinter", genre: "MMO", year: "2013" },
+            { name: "DC Universe Online", genre: "MMO", year: "2011" },
+            { name: "Champions Online", genre: "MMO", year: "2009" },
+            { name: "City of Heroes", genre: "MMO", year: "2004" },
+            { name: "Conan Exiles", genre: "MMO", year: "2018" },
+            { name: "Ark Survival Evolved", genre: "MMO", year: "2017" }
+        ];
+
+        // Initialize games
+        allGames = gamesData;
+        trendingGames = gamesData.slice(0, 11);
+        renderGames(trendingGames);
+
+        function updateSelectedCount() {
+            if (selectedGames.size > 0) {
+                countText.textContent = `${selectedGames.size} selected`;
+                selectedCountBadge.classList.add('show');
+            } else {
+                selectedCountBadge.classList.remove('show');
+            }
+        }
+
+        function toggleGame(gameName, button) {
+            if (selectedGames.has(gameName)) {
+                selectedGames.delete(gameName);
+                button.classList.remove('active');
+                button.innerHTML = '<i class="fa-solid fa-circle-plus"></i>';
+            } else {
+                selectedGames.add(gameName);
+                button.classList.add('active');
+                button.innerHTML = '<i class="fa-solid fa-circle-check"></i>';
+            }
+            updateSelectedCount();
+        }
+
+        const gameCoverFallback =
+            "https://placehold.co/300x450/e4e6eb/65676b?text=No+Cover";
+
+        function getGameCoverUrl(game) {
+            const query = `${game.name} ${game.year} video game cover`;
+            return (
+                "https://tse1.mm.bing.net/th" +
+                "?q=" + encodeURIComponent(query) +
+                "&w=300&h=450&c=7&rs=1&p=0&dpr=2" +
+                "&pid=1.7&mkt=en-US&adlt=moderate"
+            );
+        }
+
+        function renderGames(games) {
+            gamesList.innerHTML = '';
+            games.forEach((game, index) => {
+                const item = document.createElement('div');
+                item.className = 'game-item';
+                const isSelected = selectedGames.has(game.name);
+                const buttonClass = isSelected ? 'add-btn active' : 'add-btn';
+                const iconClass = isSelected ? 'fa-solid fa-circle-check' : 'fa-solid fa-circle-plus';
+                
+                item.innerHTML = `
+                    <img
+                        src="${getGameCoverUrl(game)}"
+                        alt="${game.name} cover"
+                        class="game-image"
+                        loading="lazy"
+                        referrerpolicy="no-referrer"
+                        onerror="this.onerror=null;this.src=gameCoverFallback"
+                    >
+                    <div class="game-info">
+                        <p class="game-title">${game.name}</p>
+                        <p class="game-meta">${game.genre} · ${game.year}</p>
+                    </div>
+                    <button class="${buttonClass}">
+                        <i class="${iconClass}"></i>
+                    </button>
+                `;
+                
+                const button = item.querySelector('button');
+                button.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleGame(game.name, button);
+                });
+                
+                gamesList.appendChild(item);
+            });
+        }
+
+        function displaySelectedGames() {
+            gamesDisplay.innerHTML = '';
+            selectedGames.forEach(game => {
+                const tag = document.createElement('div');
+                tag.className = 'game-tag';
+                tag.innerHTML = `
+                    ${game}
+                    <span class="remove-btn">×</span>
+                `;
+                tag.querySelector('.remove-btn').addEventListener('click', () => {
+                    selectedGames.delete(game);
+                    displaySelectedGames();
+                });
+                gamesDisplay.appendChild(tag);
+            });
+        }
+
+        function showPage(page) {
+            addGamesPage.classList.remove('active');
+            gamesPage.classList.remove('active');
+            page.classList.add('active');
+        }
+
+        // Done button handler
+        document.getElementById('done-btn').addEventListener('click', () => {
+            if (selectedGames.size > 0) {
+                displaySelectedGames();
+                showPage(gamesPage);
+            } else {
+                alert('Please select at least one game');
+            }
+        });
+
+        // Close button handler
+        document.getElementById('close-btn').addEventListener('click', () => {
+            showPage(addGamesPage);
+        });
+
+        // Add more button handler
+        document.getElementById('add-more-btn').addEventListener('click', () => {
+            showPage(addGamesPage);
+        });
+
+        // Save button handler
+        document.getElementById('save-btn').addEventListener('click', () => {
+            const gamesList = Array.from(selectedGames).join(', ');
+            alert(`Games saved: ${gamesList}`);
+        });
+
+        // Search functionality
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            if (query === '') {
+                renderGames(trendingGames);
+            } else {
+                const filtered = allGames.filter(game => 
+                    game.name.toLowerCase().includes(query)
+                );
+                renderGames(filtered);
+            }
+        });
+    </script>
+</body>
+</html>
