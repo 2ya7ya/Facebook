@@ -6705,46 +6705,16 @@ app.post('/api/messaging/media-preview', requireApiAuth, express.raw({type:['app
   let directory='';
   try{
     directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),'facebook-message-preview-'));
-    const isVideo=mime.startsWith('video/');
-    const extension=isVideo?(mime.includes('quicktime')?'.mov':mime.includes('webm')?'.webm':mime.includes('3gpp')?'.3gp':'.mp4'):(mime.includes('heic')||mime.includes('heif')?'.heic':'.img');
-    const input=path.join(directory,'selected-media'+extension);
+    const input=path.join(directory,'selected-media'),isVideo=mime.startsWith('video/'),output=path.join(directory,'preview.jpg');
     await fs.promises.writeFile(input,bytes);
-
     if(isVideo){
-      /* Android file pickers can expose HEVC/H.265 videos that Chrome cannot
-         decode directly. Build a temporary H.264 preview for the preview
-         screen while keeping the original file untouched for sending. */
-      const videoOutput=path.join(directory,'preview.mp4');
-      let videoError=null;
-      try{
-        await runProcess(ffmpegBinary(),[
-          '-hide_banner','-loglevel','error','-y','-i',input,'-map','0:v:0','-an',
-          '-vf',"scale=w='min(720,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-          '-c:v','libx264','-preset','ultrafast','-crf','31','-pix_fmt','yuv420p','-movflags','+faststart',videoOutput
-        ]);
-        const playable=await fs.promises.readFile(videoOutput);
-        if(playable.length)return sendPreview(playable,'video/mp4','video');
-      }catch(error){videoError=error;}
-
-      /* If full preview transcoding fails, still show a real thumbnail rather
-         than the broken 0:00 video placeholder. */
-      const posterOutput=path.join(directory,'preview.jpg');
-      try{
-        await runProcess(ffmpegBinary(),[
-          '-hide_banner','-loglevel','error','-y','-ss','0.05','-i',input,'-map','0:v:0',
-          '-frames:v','1','-vf',"scale=w='min(1080,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-          '-q:v','4',posterOutput
-        ]);
-        const poster=await fs.promises.readFile(posterOutput);
-        if(poster.length)return sendPreview(poster,'image/jpeg','image');
-      }catch(posterError){
-        console.warn('Messenger video preview failed:',videoError?.message||'',posterError.message);
-      }
-      return response.status(422).json({error:'This video could not be decoded for preview.'});
+      /* Popular messaging clients show a poster while the original video is
+         uploaded. Extracting one frame is much faster and more compatible
+         than transcoding a temporary preview clip. */
+      await runProcess(ffmpegBinary(),['-hide_banner','-loglevel','error','-y','-i',input,'-map','0:v:0','-frames:v','1','-vf',"scale=w='min(1080,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-q:v','4',output]);
+    }else{
+      await runProcess(ffmpegBinary(),['-hide_banner','-loglevel','error','-y','-i',input,'-frames:v','1','-vf',"scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-q:v','3',output]);
     }
-
-    const output=path.join(directory,'preview.jpg');
-    await runProcess(ffmpegBinary(),['-hide_banner','-loglevel','error','-y','-i',input,'-frames:v','1','-vf',"scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-q:v','3',output]);
     const normalized=await fs.promises.readFile(output);
     sendPreview(normalized,'image/jpeg','image');
   }catch(error){
