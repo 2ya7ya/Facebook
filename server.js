@@ -368,6 +368,7 @@ async function ensureDatabase() {
   await pool.query('CREATE INDEX IF NOT EXISTS marketplace_seller_created_idx ON marketplace_listings(seller_id, created_at DESC, id DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS marketplace_saved_user_created_idx ON marketplace_saved(user_id, created_at DESC)');
   await pool.query("ALTER TABLE marketplace_listings ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''");
+  await pool.query("ALTER TABLE marketplace_listings ADD COLUMN IF NOT EXISTS media_json JSONB NOT NULL DEFAULT '[]'::jsonb");
   await pool.query("ALTER TABLE marketplace_listings ADD COLUMN IF NOT EXISTS condition VARCHAR(40) NOT NULL DEFAULT ''");
   await pool.query("ALTER TABLE marketplace_listings ADD COLUMN IF NOT EXISTS seller_ip_prefix VARCHAR(80) NOT NULL DEFAULT ''");
   await pool.query("ALTER TABLE marketplace_listings ADD COLUMN IF NOT EXISTS seller_country VARCHAR(120) NOT NULL DEFAULT ''");
@@ -2925,6 +2926,31 @@ function marketplaceImageOkay(value) {
   return !image || validImageData(image);
 }
 
+function marketplaceMediaNormalize(value) {
+  if (!Array.isArray(value)) return [];
+  const output=[];
+  let total=0;
+  for (const raw of value.slice(0,10)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const data=String(raw.data || '');
+    const type=String(raw.type || '').toLowerCase()==='video' || data.startsWith('data:video/') ? 'video' : 'image';
+    if (!data.startsWith('data:image/') && !data.startsWith('data:video/')) continue;
+    const bytes=Buffer.byteLength(data,'utf8');
+    if (bytes > 12*1024*1024) continue;
+    total += bytes;
+    if (total > 60*1024*1024) break;
+    output.push({type,data});
+  }
+  return output;
+}
+
+function marketplaceMediaPublic(row) {
+  const media=Array.isArray(row && row.media_json) ? row.media_json : [];
+  if (media.length) return media.map((item,index)=>({type:String(item.type||'image'),url:`/api/marketplace/${row.id}/media/${index}`}));
+  if (row && row.has_image) return [{type:'image',url:`/api/marketplace/${row.id}/image`}];
+  return [];
+}
+
 app.get('/api/manage-posts', requireApiAuth, async (request, response) => {
   const type = String(request.query.type || 'all').toLowerCase();
   const allowedTypes = new Set(['all','reels','text','stickers','stories','music','photos','location']);
@@ -3060,7 +3086,7 @@ app.get('/api/marketplace', requireApiAuth, async (request, response) => {
     const values=[request.user.id,query,category,condition,minPrice,maxPrice];
     let sql=`
       SELECT m.id,m.seller_id,m.title,m.price,m.currency,m.category,m.location,m.seller_country,m.description,m.condition,m.views,
-             (m.image_data IS NOT NULL AND m.image_data<>'') AS has_image,m.status,m.created_at,u.full_name AS seller_name,
+             (m.image_data IS NOT NULL AND m.image_data<>'') AS has_image,m.status,m.created_at,m.media_json,u.full_name AS seller_name,
              EXISTS(SELECT 1 FROM marketplace_saved ms WHERE ms.listing_id=m.id AND ms.user_id=$1) AS saved,
              (SELECT COUNT(*)::int FROM marketplace_saved sx WHERE sx.listing_id=m.id) AS save_count
         FROM marketplace_listings m JOIN users u ON u.id=m.seller_id `;
@@ -3102,7 +3128,7 @@ app.get('/api/marketplace', requireApiAuth, async (request, response) => {
       id:String(row.id),sellerId:String(row.seller_id),sellerName:row.seller_name || 'Facebook user',title:row.title || '',
       price:row.price==null?null:Number(row.price),currency:row.currency || '',category:row.category || '',location:row.location || '',sellerCountry:row.seller_country || '',
       description:row.description || '',condition:row.condition || '',views:Number(row.views || 0),saved:Boolean(row.saved),status:row.status || 'active',
-      imageUrl:row.has_image ? `/api/marketplace/${row.id}/image` : '',createdAt:row.created_at
+      imageUrl:(marketplaceMediaPublic(row).find(item=>item.type==='image')?.url || (row.has_image ? `/api/marketplace/${row.id}/image` : '')),media:marketplaceMediaPublic(row),createdAt:row.created_at
     }));
     response.set('Cache-Control','private, max-age=15, stale-while-revalidate=45');
     response.json({tab,location:sessionLocation,localAvailable:Boolean(viewerLocalPrefix),selectedCountry:countryFilter,listings,categories:[],filters:{category,condition,sort,minPrice,maxPrice,country:countryFilter}});
@@ -3118,17 +3144,20 @@ app.post('/api/marketplace', requireApiAuth, async (request,response)=>{
   const currency=String(request.body?.currency || '₪').trim().slice(0,12);
   const price=marketplacePriceNumber(request.body?.price);
   const image=String(request.body?.image || '');
+  const media=marketplaceMediaNormalize(request.body?.media);
   if(title.length<2)return response.status(400).json({error:'Add a listing title.'});
   if(!category)return response.status(400).json({error:'Choose a category.'});
   if(price===null)return response.status(400).json({error:'Enter a valid price.'});
   if(!marketplaceImageOkay(image))return response.status(400).json({error:'Choose a supported photo smaller than 8 MB.'});
+  if(Array.isArray(request.body?.media) && request.body.media.length && !media.length)return response.status(400).json({error:'Choose supported photos or videos.'});
   try{
     const sellerIpPrefix=marketplaceLocalIpPrefix(requestClientIp(request));
     const sessionKey=accountSessionKey(request,request.user.sid);
     const sessionLocationResult=await pool.query(`SELECT location FROM account_login_sessions WHERE user_id=$1 AND session_key=$2 ORDER BY last_active_at DESC LIMIT 1`,[request.user.id,sessionKey]);
     const sessionLocation=String(sessionLocationResult.rows[0]?.location || '');
     const sellerCountry=sessionLocation ? String(sessionLocation.split(',').pop() || '').trim().slice(0,120) : '';
-    const result=await pool.query(`INSERT INTO marketplace_listings(seller_id,title,price,currency,category,location,seller_ip_prefix,seller_country,image_data,status,description,condition) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10,$11) RETURNING id`,[request.user.id,title,price,currency,category,location,sellerIpPrefix,sellerCountry,image || null,description,condition]);
+    const firstImage=media.find(item=>item.type==='image')?.data || image || null;
+    const result=await pool.query(`INSERT INTO marketplace_listings(seller_id,title,price,currency,category,location,seller_ip_prefix,seller_country,image_data,media_json,status,description,condition) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'active',$11,$12) RETURNING id`,[request.user.id,title,price,currency,category,location,sellerIpPrefix,sellerCountry,firstImage,JSON.stringify(media),description,condition]);
     response.json({ok:true,id:String(result.rows[0].id)});
   }catch(error){console.error('Marketplace create failed:',error.message);response.status(500).json({error:'Could not publish the listing.'});}
 });
@@ -3146,14 +3175,15 @@ app.post('/api/marketplace/:listingId/save', requireApiAuth, async (request,resp
 app.get('/api/marketplace/:listingId', requireApiAuth, async (request,response)=>{
   if(!validNumericId(request.params.listingId))return response.status(400).json({error:'Invalid listing.'});
   try{
-    const result=await pool.query(`SELECT m.id,m.seller_id,m.title,m.price,m.currency,m.category,m.location,m.seller_country,m.description,m.condition,m.views,m.status,m.created_at,u.full_name AS seller_name,(m.image_data IS NOT NULL AND m.image_data<>'') AS has_image,EXISTS(SELECT 1 FROM marketplace_saved ms WHERE ms.listing_id=m.id AND ms.user_id=$2) AS saved FROM marketplace_listings m JOIN users u ON u.id=m.seller_id WHERE m.id=$1 LIMIT 1`,[request.params.listingId,request.user.id]);
+    const result=await pool.query(`SELECT m.id,m.seller_id,m.title,m.price,m.currency,m.category,m.location,m.seller_country,m.description,m.condition,m.views,m.status,m.created_at,m.media_json,u.full_name AS seller_name,u.profile_photo AS seller_photo,(m.image_data IS NOT NULL AND m.image_data<>'') AS has_image,EXISTS(SELECT 1 FROM marketplace_saved ms WHERE ms.listing_id=m.id AND ms.user_id=$2) AS saved FROM marketplace_listings m JOIN users u ON u.id=m.seller_id WHERE m.id=$1 LIMIT 1`,[request.params.listingId,request.user.id]);
     if(!result.rowCount)return response.status(404).json({error:'Listing not found.'});
     await Promise.all([
       pool.query('UPDATE marketplace_listings SET views=views+1 WHERE id=$1',[request.params.listingId]),
       pool.query(`INSERT INTO marketplace_recent_views(user_id,listing_id,viewed_at) VALUES($1,$2,NOW()) ON CONFLICT(user_id,listing_id) DO UPDATE SET viewed_at=NOW()`,[request.user.id,request.params.listingId])
     ]);
     const row=result.rows[0];
-    response.json({id:String(row.id),sellerId:String(row.seller_id),sellerName:row.seller_name || 'Facebook user',title:row.title || '',price:row.price==null?null:Number(row.price),currency:row.currency || '',category:row.category || '',location:row.location || '',sellerCountry:row.seller_country || '',description:row.description || '',condition:row.condition || '',views:Number(row.views || 0)+1,saved:Boolean(row.saved),status:row.status || 'active',imageUrl:row.has_image?`/api/marketplace/${row.id}/image`:'',createdAt:row.created_at});
+    const media=marketplaceMediaPublic(row);
+    response.json({id:String(row.id),sellerId:String(row.seller_id),sellerName:row.seller_name || 'Facebook user',sellerAvatar:row.seller_photo || '',title:row.title || '',price:row.price==null?null:Number(row.price),currency:row.currency || '',category:row.category || '',location:row.location || '',sellerCountry:row.seller_country || '',description:row.description || '',condition:row.condition || '',views:Number(row.views || 0)+1,saved:Boolean(row.saved),status:row.status || 'active',imageUrl:media.find(item=>item.type==='image')?.url || (row.has_image?`/api/marketplace/${row.id}/image`:''),media,createdAt:row.created_at});
   }catch(error){console.error('Marketplace detail failed:',error.message);response.status(500).json({error:'Could not open listing.'});}
 });
 
@@ -3168,12 +3198,16 @@ app.patch('/api/marketplace/:listingId', requireApiAuth, async (request,response
   const price=marketplacePriceNumber(request.body?.price);
   const imageProvided=Object.prototype.hasOwnProperty.call(request.body || {},'image');
   const image=String(request.body?.image || '');
+  const mediaProvided=Object.prototype.hasOwnProperty.call(request.body || {},'media');
+  const media=marketplaceMediaNormalize(request.body?.media);
   if(title.length<2)return response.status(400).json({error:'Add a listing title.'});
   if(!category)return response.status(400).json({error:'Choose a category.'});
   if(price===null)return response.status(400).json({error:'Enter a valid price.'});
   if(imageProvided&&!marketplaceImageOkay(image))return response.status(400).json({error:'Choose a supported photo smaller than 8 MB.'});
+  if(mediaProvided && Array.isArray(request.body?.media) && request.body.media.length && !media.length)return response.status(400).json({error:'Choose supported photos or videos.'});
   try{
-    const result=await pool.query(`UPDATE marketplace_listings SET title=$1,price=$2,currency=$3,category=$4,location=$5,description=$6,condition=$7,image_data=CASE WHEN $8::boolean THEN NULLIF($9,'') ELSE image_data END,updated_at=NOW() WHERE id=$10 AND seller_id=$11 RETURNING id`,[title,price,currency,category,location,description,condition,imageProvided,image,request.params.listingId,request.user.id]);
+    const firstImage=media.find(item=>item.type==='image')?.data || image;
+    const result=await pool.query(`UPDATE marketplace_listings SET title=$1,price=$2,currency=$3,category=$4,location=$5,description=$6,condition=$7,image_data=CASE WHEN $8::boolean OR $10::boolean THEN NULLIF($9,'') ELSE image_data END,media_json=CASE WHEN $10::boolean THEN $11::jsonb ELSE media_json END,updated_at=NOW() WHERE id=$12 AND seller_id=$13 RETURNING id`,[title,price,currency,category,location,description,condition,imageProvided,firstImage,mediaProvided,JSON.stringify(media),request.params.listingId,request.user.id]);
     if(!result.rowCount)return response.status(404).json({error:'Listing not found.'});
     response.json({ok:true,id:String(result.rows[0].id)});
   }catch(error){console.error('Marketplace edit failed:',error.message);response.status(500).json({error:'Could not update the listing.'});}
@@ -3191,6 +3225,21 @@ app.delete('/api/marketplace/:listingId', requireApiAuth, async (request,respons
   if(!validNumericId(request.params.listingId))return response.status(400).json({error:'Invalid listing.'});
   try{const result=await pool.query('DELETE FROM marketplace_listings WHERE id=$1 AND seller_id=$2 RETURNING id',[request.params.listingId,request.user.id]);if(!result.rowCount)return response.status(404).json({error:'Listing not found.'});response.json({ok:true});}
   catch(error){console.error('Marketplace delete failed:',error.message);response.status(500).json({error:'Could not delete listing.'});}
+});
+
+app.get('/api/marketplace/:listingId/media/:mediaIndex', requireApiAuth, async (request, response) => {
+  if (!validNumericId(request.params.listingId)) return response.status(400).json({ error: 'Invalid listing.' });
+  const index=Number(request.params.mediaIndex);
+  if (!Number.isInteger(index) || index<0 || index>9) return response.status(400).json({error:'Invalid media.'});
+  try {
+    await ensureDatabase();
+    const result=await pool.query('SELECT media_json FROM marketplace_listings WHERE id=$1 LIMIT 1',[request.params.listingId]);
+    if(!result.rowCount)return response.status(404).end();
+    const media=Array.isArray(result.rows[0].media_json)?result.rows[0].media_json:[];
+    const item=media[index];
+    if(!item || !item.data)return response.status(404).end();
+    return sendAdminActivityDataUri(request,response,String(item.data),String(item.type||'')==='video'?'video/mp4':'image/jpeg');
+  } catch(error) { console.error('Marketplace media load failed:',error.message); return response.status(500).end(); }
 });
 
 app.get('/api/marketplace/:listingId/image', requireApiAuth, async (request, response) => {
@@ -6675,7 +6724,7 @@ app.get('/api/messaging/shared/posts/:postId/preview', requireApiAuth, async (re
   }catch(error){console.error('Shared post preview failed:',error.message);response.status(500).end();}
 });
 
-app.post('/api/messaging/media-preview', requireApiAuth, express.raw({type:['application/octet-stream','image/*','video/*','multipart/form-data'],limit:'55mb'}), async (request,response)=>{
+app.post('/api/messaging/media-preview', requireApiAuth, express.raw({type:['application/octet-stream','multipart/form-data'],limit:'55mb'}), async (request,response)=>{
   const rawBody=Buffer.isBuffer(request.body)?request.body:Buffer.alloc(0),contentType=String(request.headers['content-type']||'');
   let bytes=rawBody,partMime='';
   if(/^multipart\/form-data/i.test(contentType)){
@@ -6689,48 +6738,40 @@ app.post('/api/messaging/media-preview', requireApiAuth, express.raw({type:['app
     }
   }
   if(!bytes.length)return response.status(400).json({error:'Choose a photo or video.'});
-  const directContentMime=/^(image|video)\/[a-z0-9.+-]+$/i.test(contentType.split(';')[0].trim())?contentType.split(';')[0].trim().toLowerCase():'';
-  const requestedMime=String(request.headers['x-file-type']||partMime||directContentMime||'').toLowerCase().split(';')[0].trim();
+  const requestedMime=String(request.headers['x-file-type']||partMime||'').toLowerCase().split(';')[0].trim();
   const mime=/^(image|video)\/[a-z0-9.+-]+$/.test(requestedMime)?requestedMime:'application/octet-stream';
   if(mime==='application/octet-stream')return response.status(415).json({error:'Choose a supported photo or video.'});
   const sendPreview=(payload,type,kind)=>{
-    response.setHeader('Content-Type',type);response.setHeader('X-Preview-Kind',kind||(/video\//.test(type)?'video':'image'));
-    response.setHeader('Content-Length',String(payload.length));response.setHeader('Content-Disposition','inline');
-    response.setHeader('Cache-Control','private, no-store, max-age=0');response.setHeader('X-Content-Type-Options','nosniff');response.send(payload);
+    response.setHeader('Content-Type',type);
+    response.setHeader('X-Preview-Kind',kind||(/video\//.test(type)?'video':'image'));
+    response.setHeader('Content-Length',String(payload.length));
+    response.setHeader('Content-Disposition','inline');
+    response.setHeader('Cache-Control','private, no-store, max-age=0');
+    response.setHeader('X-Content-Type-Options','nosniff');
+    response.send(payload);
   };
   if(/^image\/(jpeg|png|webp|gif)$/.test(mime))return sendPreview(bytes,mime,'image');
   let directory='';
   try{
     directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),'facebook-message-preview-'));
-    const decodedName=(()=>{try{return decodeURIComponent(String(request.headers['x-file-name']||'media'));}catch(_e){return String(request.headers['x-file-name']||'media');}})();
-    const safeName=decodedName.toLowerCase(),nameExtension=path.extname(safeName).replace(/[^.a-z0-9]/g,'').slice(0,8);
-    const mimeExtension={'video/mp4':'.mp4','video/quicktime':'.mov','video/webm':'.webm','video/3gpp':'.3gp','video/x-matroska':'.mkv','image/avif':'.avif','image/heic':'.heic','image/heif':'.heif','image/bmp':'.bmp'}[mime]||'';
-    const input=path.join(directory,'selected-media'+(nameExtension||mimeExtension||'.bin')),isVideo=mime.startsWith('video/'),output=path.join(directory,'preview.jpg');
+    const input=path.join(directory,'selected-media'),isVideo=mime.startsWith('video/'),output=path.join(directory,'preview.jpg');
     await fs.promises.writeFile(input,bytes);
-    const common=['-hide_banner','-loglevel','error','-y','-probesize','100M','-analyzeduration','100M'];
-    const scale=isVideo?"scale=w='min(1080,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2":"scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2";
-    const attempts=isVideo?[
-      [...common,'-i',input,'-map','0:v:0','-frames:v','1','-vf',scale,'-q:v','4',output],
-      [...common,'-ss','0.10','-i',input,'-map','0:v:0','-frames:v','1','-vf',scale,'-q:v','4',output],
-      [...common,'-fflags','+genpts+discardcorrupt','-err_detect','ignore_err','-i',input,'-map','0:v:0','-frames:v','1','-vf',scale,'-q:v','5',output],
-      [...common,'-ss','0.50','-i',input,'-map','0:v:0','-frames:v','1','-vf',scale,'-q:v','5',output]
-    ]:[
-      [...common,'-i',input,'-frames:v','1','-vf',scale,'-q:v','3',output],
-      [...common,'-err_detect','ignore_err','-i',input,'-frames:v','1','-vf',scale,'-q:v','4',output]
-    ];
-    const packaged=ffmpegBinary(),commands=[packaged];if(packaged!=='ffmpeg')commands.push('ffmpeg');
-    let lastError=null,normalized=null;
-    outer:for(const args of attempts){
-      for(const command of commands){
-        try{await fs.promises.rm(output,{force:true});await runProcess(command,args);normalized=await fs.promises.readFile(output);if(normalized.length){lastError=null;break outer;}}catch(error){lastError=error;}
-      }
+    if(isVideo){
+      /* Popular messaging clients show a poster while the original video is
+         uploaded. Extracting one frame is much faster and more compatible
+         than transcoding a temporary preview clip. */
+      await runProcess(ffmpegBinary(),['-hide_banner','-loglevel','error','-y','-i',input,'-map','0:v:0','-frames:v','1','-vf',"scale=w='min(1080,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-q:v','4',output]);
+    }else{
+      await runProcess(ffmpegBinary(),['-hide_banner','-loglevel','error','-y','-i',input,'-frames:v','1','-vf',"scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-q:v','3',output]);
     }
-    if(!normalized?.length)throw lastError||new Error('Preview conversion produced an empty image.');
+    const normalized=await fs.promises.readFile(output);
     sendPreview(normalized,'image/jpeg','image');
   }catch(error){
     console.warn('Messenger preview normalization failed:',error.message);
     response.status(422).json({error:'This media format could not be decoded.'});
-  }finally{if(directory)fs.promises.rm(directory,{recursive:true,force:true}).catch(()=>{});}
+  }finally{
+    if(directory)fs.promises.rm(directory,{recursive:true,force:true}).catch(()=>{});
+  }
 });
 
 app.post('/api/messaging/conversations/:conversationId/attachment', requireApiAuth, express.raw({type:['application/octet-stream','multipart/form-data'],limit:'27mb'}), async (request,response)=>{
