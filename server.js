@@ -6694,44 +6694,43 @@ app.post('/api/messaging/media-preview', requireApiAuth, express.raw({type:['app
   const mime=/^(image|video)\/[a-z0-9.+-]+$/.test(requestedMime)?requestedMime:'application/octet-stream';
   if(mime==='application/octet-stream')return response.status(415).json({error:'Choose a supported photo or video.'});
   const sendPreview=(payload,type,kind)=>{
-    response.setHeader('Content-Type',type);
-    response.setHeader('X-Preview-Kind',kind||(/video\//.test(type)?'video':'image'));
-    response.setHeader('Content-Length',String(payload.length));
-    response.setHeader('Content-Disposition','inline');
-    response.setHeader('Cache-Control','private, no-store, max-age=0');
-    response.setHeader('X-Content-Type-Options','nosniff');
-    response.send(payload);
+    response.setHeader('Content-Type',type);response.setHeader('X-Preview-Kind',kind||(/video\//.test(type)?'video':'image'));
+    response.setHeader('Content-Length',String(payload.length));response.setHeader('Content-Disposition','inline');
+    response.setHeader('Cache-Control','private, no-store, max-age=0');response.setHeader('X-Content-Type-Options','nosniff');response.send(payload);
   };
   if(/^image\/(jpeg|png|webp|gif)$/.test(mime))return sendPreview(bytes,mime,'image');
   let directory='';
   try{
     directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),'facebook-message-preview-'));
-    const fileName=decodeURIComponent(String(request.headers['x-file-name']||'media')).toLowerCase();
-    const extensionFromMime={
-      'video/mp4':'.mp4','video/quicktime':'.mov','video/webm':'.webm','video/3gpp':'.3gp','video/x-matroska':'.mkv',
-      'image/avif':'.avif','image/heic':'.heic','image/heif':'.heif','image/bmp':'.bmp'
-    }[mime]||path.extname(fileName).replace(/[^.a-z0-9]/g,'').slice(0,8)||'';
-    const input=path.join(directory,'selected-media'+extensionFromMime),isVideo=mime.startsWith('video/'),output=path.join(directory,'preview.jpg');
+    const decodedName=(()=>{try{return decodeURIComponent(String(request.headers['x-file-name']||'media'));}catch(_e){return String(request.headers['x-file-name']||'media');}})();
+    const safeName=decodedName.toLowerCase(),nameExtension=path.extname(safeName).replace(/[^.a-z0-9]/g,'').slice(0,8);
+    const mimeExtension={'video/mp4':'.mp4','video/quicktime':'.mov','video/webm':'.webm','video/3gpp':'.3gp','video/x-matroska':'.mkv','image/avif':'.avif','image/heic':'.heic','image/heif':'.heif','image/bmp':'.bmp'}[mime]||'';
+    const input=path.join(directory,'selected-media'+(nameExtension||mimeExtension||'.bin')),isVideo=mime.startsWith('video/'),output=path.join(directory,'preview.jpg');
     await fs.promises.writeFile(input,bytes);
-    const args=isVideo
-      ? ['-hide_banner','-loglevel','error','-y','-i',input,'-map','0:v:0','-frames:v','1','-vf',"scale=w='min(1080,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-q:v','4',output]
-      : ['-hide_banner','-loglevel','error','-y','-i',input,'-frames:v','1','-vf',"scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-q:v','3',output];
-    const packaged=ffmpegBinary(),commands=[packaged];
-    if(packaged!=='ffmpeg')commands.push('ffmpeg');
-    let lastError=null;
-    for(const command of commands){
-      try{await runProcess(command,args);lastError=null;break;}catch(error){lastError=error;}
+    const common=['-hide_banner','-loglevel','error','-y','-probesize','100M','-analyzeduration','100M'];
+    const scale=isVideo?"scale=w='min(1080,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2":"scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2";
+    const attempts=isVideo?[
+      [...common,'-i',input,'-map','0:v:0','-frames:v','1','-vf',scale,'-q:v','4',output],
+      [...common,'-ss','0.10','-i',input,'-map','0:v:0','-frames:v','1','-vf',scale,'-q:v','4',output],
+      [...common,'-fflags','+genpts+discardcorrupt','-err_detect','ignore_err','-i',input,'-map','0:v:0','-frames:v','1','-vf',scale,'-q:v','5',output],
+      [...common,'-ss','0.50','-i',input,'-map','0:v:0','-frames:v','1','-vf',scale,'-q:v','5',output]
+    ]:[
+      [...common,'-i',input,'-frames:v','1','-vf',scale,'-q:v','3',output],
+      [...common,'-err_detect','ignore_err','-i',input,'-frames:v','1','-vf',scale,'-q:v','4',output]
+    ];
+    const packaged=ffmpegBinary(),commands=[packaged];if(packaged!=='ffmpeg')commands.push('ffmpeg');
+    let lastError=null,normalized=null;
+    outer:for(const args of attempts){
+      for(const command of commands){
+        try{await fs.promises.rm(output,{force:true});await runProcess(command,args);normalized=await fs.promises.readFile(output);if(normalized.length){lastError=null;break outer;}}catch(error){lastError=error;}
+      }
     }
-    if(lastError)throw lastError;
-    const normalized=await fs.promises.readFile(output);
-    if(!normalized.length)throw new Error('Preview conversion produced an empty image.');
+    if(!normalized?.length)throw lastError||new Error('Preview conversion produced an empty image.');
     sendPreview(normalized,'image/jpeg','image');
   }catch(error){
     console.warn('Messenger preview normalization failed:',error.message);
     response.status(422).json({error:'This media format could not be decoded.'});
-  }finally{
-    if(directory)fs.promises.rm(directory,{recursive:true,force:true}).catch(()=>{});
-  }
+  }finally{if(directory)fs.promises.rm(directory,{recursive:true,force:true}).catch(()=>{});}
 });
 
 app.post('/api/messaging/conversations/:conversationId/attachment', requireApiAuth, express.raw({type:['application/octet-stream','multipart/form-data'],limit:'27mb'}), async (request,response)=>{
