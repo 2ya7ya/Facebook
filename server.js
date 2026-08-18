@@ -6629,7 +6629,31 @@ async function messengerCreateReceipts(messageId, conversationId, senderId) {
     )
   `, [messageId, conversationId, onlineIds, senderId]);
 }
-async function messengerFinalizeMessage(messageId, conversationId, senderId) {
+async function messengerFinalizeMessage(messageId, conversationId, senderId, fastFreshText = false) {
+  if (fastFreshText) {
+    const [, , memberIds] = await Promise.all([
+      messengerTouchConversation(conversationId),
+      messengerCreateReceipts(messageId, conversationId, senderId),
+      messengerMemberIds(conversationId)
+    ]);
+
+    const message = await loadMessengerMessage(messageId, senderId);
+
+    if (message) {
+      const payload = {
+        type: 'message',
+        conversationId: String(conversationId),
+        message
+      };
+
+      for (const id of memberIds) {
+        messengerSendToUser(id, payload);
+      }
+    }
+
+    return message;
+  }
+
   await messengerTouchConversation(conversationId);
   await messengerCreateReceipts(messageId,conversationId,senderId);
   const message=await loadMessengerMessage(messageId,senderId);
@@ -6747,7 +6771,7 @@ app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth
     const insertMs=messengerBenchmarkMs(insertStart);
 
     const finalizeStart=process.hrtime.bigint();
-    const message=await messengerFinalizeMessage(inserted.rows[0].id,cid,request.user.id);
+    const message=await messengerFinalizeMessage(inserted.rows[0].id,cid,request.user.id,true);
     const finalizeMs=messengerBenchmarkMs(finalizeStart);
     const serverMs=messengerBenchmarkMs(benchmarkStart);
     const benchmark={
