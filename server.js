@@ -6510,7 +6510,7 @@ function messengerRecordLatency(sample) {
   if (messengerLatencySamples.length > 200) messengerLatencySamples.splice(0, messengerLatencySamples.length - 200);
 }
 function messengerLatencySummary(samples) {
-  const keys = ['insertMs', 'finalizeMs', 'serverMs'];
+  const keys = ['insertMs', 'finalizeMs', 'wsSendMs', 'serverMs'];
   const result = {};
   for (const key of keys) {
     const values = samples.map(item => Number(item[key])).filter(Number.isFinite).sort((a,b)=>a-b);
@@ -6542,7 +6542,32 @@ function messengerUserOnline(userId) {
 function messengerSendToUser(userId, payload) {
   const set = messengerSocketsByUser.get(String(userId));
   if (!set) return;
-  const encoded = JSON.stringify(payload);
+
+  let wirePayload = payload;
+
+  if (payload && payload.__benchmarkStartNs) {
+    const wsSendMs =
+      Number(process.hrtime.bigint() - payload.__benchmarkStartNs) / 1e6;
+
+    const messageId = payload.message?.id;
+
+    if (messageId) {
+      const sample = messengerLatencySamples
+        .slice()
+        .reverse()
+        .find(item => String(item.messageId) === String(messageId));
+
+      if (sample && sample.wsSendMs == null) {
+        sample.wsSendMs = Number(wsSendMs.toFixed(3));
+      }
+    }
+
+    wirePayload = { ...payload };
+    delete wirePayload.__benchmarkStartNs;
+  }
+
+  const encoded = JSON.stringify(wirePayload);
+
   for (const socket of set) if (socket.readyState === WebSocket.OPEN) {
     try { socket.send(encoded); } catch (_error) {}
   }
@@ -6791,7 +6816,7 @@ async function messengerCreateReceipts(messageId, conversationId, senderId, know
     deliveredAt
   };
 }
-async function messengerFinalizeMessage(messageId, conversationId, senderId, fastFreshText = false) {
+async function messengerFinalizeMessage(messageId, conversationId, senderId, fastFreshText = false, benchmarkContext = null) {
   if (fastFreshText) {
     const [, memberIds] = await Promise.all([
       messengerTouchConversation(conversationId),
@@ -6814,7 +6839,8 @@ async function messengerFinalizeMessage(messageId, conversationId, senderId, fas
       const payload = {
         type: 'message',
         conversationId: String(conversationId),
-        message
+        message,
+        __benchmarkStartNs: benchmarkContext?.startNs || null
       };
 
       for (const id of memberIds) {
@@ -6948,7 +6974,13 @@ app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth
     const insertMs=messengerBenchmarkMs(insertStart);
 
     const finalizeStart=process.hrtime.bigint();
-    const message=await messengerFinalizeMessage(inserted.rows[0].id,cid,request.user.id,true);
+    const message=await messengerFinalizeMessage(
+      inserted.rows[0].id,
+      cid,
+      request.user.id,
+      true,
+      { startNs: benchmarkStart }
+    );
     const finalizeMs=messengerBenchmarkMs(finalizeStart);
     const serverMs=messengerBenchmarkMs(benchmarkStart);
     const benchmark={
