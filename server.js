@@ -42,6 +42,16 @@ app.use((request, response, next) => {
   response.setHeader('Accept-CH', 'Sec-CH-UA-Model, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version, Sec-CH-UA-Full-Version-List, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, ECT, Downlink, Save-Data');
   next();
 });
+app.use((request, response, next) => {
+  if (
+    request.method === 'POST' &&
+    /^\/api\/messaging\/conversations\/[^/]+\/messages$/.test(request.path)
+  ) {
+    request.messengerBenchmarkStartNs = process.hrtime.bigint();
+  }
+  next();
+});
+
 app.use(express.json({ limit: '72mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
@@ -6510,7 +6520,7 @@ function messengerRecordLatency(sample) {
   if (messengerLatencySamples.length > 200) messengerLatencySamples.splice(0, messengerLatencySamples.length - 200);
 }
 function messengerLatencySummary(samples) {
-  const keys = ['insertMs', 'finalizeMs', 'wsSendMs', 'serverMs'];
+  const keys = ['preRouteMs', 'insertMs', 'finalizeMs', 'wsSendMs', 'serverMs'];
   const result = {};
   for (const key of keys) {
     const values = samples.map(item => Number(item[key])).filter(Number.isFinite).sort((a,b)=>a-b);
@@ -6945,7 +6955,9 @@ app.get('/api/messaging/conversations/:conversationId/messages', requireApiAuth,
 });
 
 app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth, async (request,response)=>{
-  const benchmarkStart=process.hrtime.bigint();
+  const benchmarkStart =
+    request.messengerBenchmarkStartNs || process.hrtime.bigint();
+  const preRouteMs = messengerBenchmarkMs(benchmarkStart);
   const cid=request.params.conversationId; if(!validNumericId(cid))return response.status(400).json({error:'Invalid conversation.'});
   try{
     await ensureDatabase();
@@ -6981,6 +6993,7 @@ app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth
     const finalizeMs=messengerBenchmarkMs(finalizeStart);
     const serverMs=messengerBenchmarkMs(benchmarkStart);
     const benchmark={
+      preRouteMs:Number(preRouteMs.toFixed(3)),
       insertMs:Number(insertMs.toFixed(3)),
       finalizeMs:Number(finalizeMs.toFixed(3)),
       serverMs:Number(serverMs.toFixed(3))
