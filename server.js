@@ -6448,6 +6448,38 @@ app.post('/api/notifications/:notificationId/read', requireApiAuth, async (reque
 const messengerSocketsByUser = new Map();
 const messengerTypingLast = new Map();
 
+/* Temporary Messenger latency benchmark.
+ * Keeps only timing metadata in memory; no message bodies or user identifiers.
+ * Samples reset when the Node process restarts.
+ */
+const messengerLatencySamples = [];
+function messengerBenchmarkMs(startNs) {
+  return Number(process.hrtime.bigint() - startNs) / 1e6;
+}
+function messengerRecordLatency(sample) {
+  messengerLatencySamples.push(sample);
+  if (messengerLatencySamples.length > 200) messengerLatencySamples.splice(0, messengerLatencySamples.length - 200);
+}
+function messengerLatencySummary(samples) {
+  const keys = ['insertMs', 'finalizeMs', 'serverMs'];
+  const result = {};
+  for (const key of keys) {
+    const values = samples.map(item => Number(item[key])).filter(Number.isFinite).sort((a,b)=>a-b);
+    if (!values.length) { result[key] = null; continue; }
+    const avg = values.reduce((a,b)=>a+b,0) / values.length;
+    const p50 = values[Math.floor((values.length - 1) * 0.50)];
+    const p95 = values[Math.floor((values.length - 1) * 0.95)];
+    result[key] = {
+      avg: Number(avg.toFixed(3)),
+      min: Number(values[0].toFixed(3)),
+      p50: Number(p50.toFixed(3)),
+      p95: Number(p95.toFixed(3)),
+      max: Number(values[values.length - 1].toFixed(3))
+    };
+  }
+  return result;
+}
+
 function messengerSocketSet(userId) {
   const key = String(userId);
   let set = messengerSocketsByUser.get(key);
@@ -6677,17 +6709,52 @@ app.get('/api/messaging/conversations/:conversationId/messages', requireApiAuth,
 });
 
 app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth, async (request,response)=>{
+  const benchmarkStart=process.hrtime.bigint();
   const cid=request.params.conversationId; if(!validNumericId(cid))return response.status(400).json({error:'Invalid conversation.'});
   try{
     await ensureDatabase(); if(!(await messengerRequireMember(cid,request.user.id)))return response.status(403).json({error:'Conversation unavailable.'});if(await messengerConversationBlocked(cid))return response.status(403).json({error:'Messaging is unavailable because this conversation is blocked.'});
     const body=String(request.body?.body||'').trim().slice(0,8000); if(!body)return response.status(400).json({error:'Write a message.'});
     const clientId=String(request.body?.clientId||crypto.randomUUID()).slice(0,96); const replyTo=validNumericId(request.body?.replyToId)?String(request.body.replyToId):null;
     if(replyTo){const ok=await pool.query('SELECT 1 FROM messenger_messages WHERE id=$1 AND conversation_id=$2',[replyTo,cid]);if(!ok.rowCount)return response.status(400).json({error:'Reply target is unavailable.'});}
+
+    const insertStart=process.hrtime.bigint();
     let inserted=await pool.query(`INSERT INTO messenger_messages(conversation_id,sender_id,client_id,message_type,body,reply_to_id) VALUES($1,$2,$3,'text',$4,$5)
       ON CONFLICT(sender_id,client_id) DO NOTHING RETURNING id`,[cid,request.user.id,clientId,body,replyTo]);
     if(!inserted.rowCount)inserted=await pool.query('SELECT id FROM messenger_messages WHERE sender_id=$1 AND client_id=$2 LIMIT 1',[request.user.id,clientId]);
-    const message=await messengerFinalizeMessage(inserted.rows[0].id,cid,request.user.id); response.json({message});
+    const insertMs=messengerBenchmarkMs(insertStart);
+
+    const finalizeStart=process.hrtime.bigint();
+    const message=await messengerFinalizeMessage(inserted.rows[0].id,cid,request.user.id);
+    const finalizeMs=messengerBenchmarkMs(finalizeStart);
+    const serverMs=messengerBenchmarkMs(benchmarkStart);
+    const benchmark={
+      insertMs:Number(insertMs.toFixed(3)),
+      finalizeMs:Number(finalizeMs.toFixed(3)),
+      serverMs:Number(serverMs.toFixed(3))
+    };
+    messengerRecordLatency({
+      at:new Date().toISOString(),
+      messageId:String(inserted.rows[0].id),
+      ...benchmark
+    });
+    response.setHeader('Server-Timing',`messenger-insert;dur=${benchmark.insertMs}, messenger-finalize;dur=${benchmark.finalizeMs}, messenger-total;dur=${benchmark.serverMs}`);
+    response.json({message,benchmark});
   }catch(error){console.error('Messenger send failed:',error.message);response.status(500).json({error:'Could not send message.'});}
+});
+
+
+/* Temporary aggregate benchmark endpoint.
+ * Requires a signed-in session and exposes timing only (no message text/users).
+ */
+app.get('/api/debug/messaging-latency', requireApiAuth, (request,response)=>{
+  const samples=messengerLatencySamples.slice(-100);
+  response.setHeader('Cache-Control','no-store');
+  response.json({
+    ok:true,
+    count:samples.length,
+    summary:messengerLatencySummary(samples),
+    samples
+  });
 });
 
 app.post('/api/messaging/conversations/:conversationId/share', requireApiAuth, async (request,response)=>{
