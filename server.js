@@ -964,19 +964,68 @@ function setSessionCookie(response, user, sessionId) {
   ]);
 }
 
+const sessionValidationCache = new Map();
+const SESSION_VALIDATION_CACHE_MS = 3000;
+
 async function serverSessionAllowed(session, request) {
   if (!pool || !session?.id) return Boolean(session);
-  await ensureAuthDatabase();
+
   const sessionKey = request ? accountSessionKey(request, session.sid) : '';
+  const cacheKey = String(session.id) + ':' + String(sessionKey);
+  const now = Date.now();
+
+  const cached = sessionValidationCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return true;
+  }
+
+  if (cached) sessionValidationCache.delete(cacheKey);
+
+  await ensureAuthDatabase();
+
   const result = await pool.query(`SELECT u.admin_suspended_at, u.admin_suspended_until, u.sessions_revoked_at,
     EXISTS(SELECT 1 FROM revoked_account_sessions r WHERE r.user_id = u.id AND r.session_key = $2) AS session_revoked
     FROM users u WHERE u.id = $1 LIMIT 1`, [session.id, sessionKey]);
+
   const user = result.rows[0];
-  const suspensionActive = Boolean(user?.admin_suspended_at) && (!user.admin_suspended_until || new Date(user.admin_suspended_until).getTime() > Date.now());
-  if (suspensionActive && request) request.accountSuspensionUntil = user.admin_suspended_until || null;
-  if (!user || suspensionActive || user.session_revoked) return false;
-  const revokedAt = user.sessions_revoked_at ? new Date(user.sessions_revoked_at).getTime() : 0;
-  return !revokedAt || Number(session.iat || 0) > revokedAt;
+
+  const suspensionActive =
+    Boolean(user?.admin_suspended_at) &&
+    (!user.admin_suspended_until ||
+      new Date(user.admin_suspended_until).getTime() > now);
+
+  if (suspensionActive && request) {
+    request.accountSuspensionUntil =
+      user.admin_suspended_until || null;
+  }
+
+  if (!user || suspensionActive || user.session_revoked) {
+    sessionValidationCache.delete(cacheKey);
+    return false;
+  }
+
+  const revokedAt = user.sessions_revoked_at
+    ? new Date(user.sessions_revoked_at).getTime()
+    : 0;
+
+  const allowed =
+    !revokedAt || Number(session.iat || 0) > revokedAt;
+
+  if (allowed) {
+    sessionValidationCache.set(cacheKey, {
+      expiresAt: now + SESSION_VALIDATION_CACHE_MS
+    });
+
+    if (sessionValidationCache.size > 2000) {
+      for (const [key, value] of sessionValidationCache) {
+        if (value.expiresAt <= now) {
+          sessionValidationCache.delete(key);
+        }
+      }
+    }
+  }
+
+  return allowed;
 }
 
 async function requireAuth(request, response, next) {
