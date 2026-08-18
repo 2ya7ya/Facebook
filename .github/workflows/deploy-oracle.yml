@@ -12,12 +12,12 @@ jobs:
     steps:
       - name: Deploy to Oracle VPS
         env:
-          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.ORACLE_SSH_KEY_B64 }}
           HOST: ${{ secrets.ORACLE_HOST }}
           USER: ${{ secrets.ORACLE_USER }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/oracle_deploy
+          printf '%s' "$SSH_KEY_B64" | base64 -d > ~/.ssh/oracle_deploy
           chmod 600 ~/.ssh/oracle_deploy
 
           ssh -o StrictHostKeyChecking=accept-new \
