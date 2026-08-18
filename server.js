@@ -6595,6 +6595,93 @@ async function loadMessengerMessage(messageId, viewerId) {
     reactions:(Array.isArray(row.reactions)?row.reactions:[]).map(reaction=>({...reaction,avatar:avatarDeliveryUrl(reaction.userId||reaction.userid,''),mine:String(reaction.userId||reaction.userid)===String(viewerId)})),receipts,status,sharedContent
   };
 }
+async function loadFreshMessengerTextMessage(messageId, viewerId) {
+  const result = await pool.query(`
+    SELECT
+      m.id,
+      m.conversation_id,
+      m.sender_id,
+      m.client_id,
+      m.message_type,
+      m.body,
+      m.reply_to_id,
+      m.forwarded_from_id,
+      m.edited_at,
+      m.deleted_at,
+      m.created_at,
+      COALESCE(NULLIF(BTRIM(mn.nickname),''),u.full_name,'Facebook user') AS sender_name,
+      u.profile_photo AS sender_photo,
+      ra.id AS reply_id,
+      ra.body AS reply_body,
+      ra.message_type AS reply_type,
+      COALESCE(NULLIF(BTRIM(rn.nickname),''),ru.full_name,'Facebook user') AS reply_sender_name,
+      COALESCE((
+        SELECT json_agg(
+          json_build_object(
+            'userId',rc.user_id,
+            'deliveredAt',rc.delivered_at,
+            'readAt',rc.read_at
+          )
+        )
+        FROM messenger_message_receipts rc
+        WHERE rc.message_id=m.id
+      ),'[]'::json) AS receipts
+    FROM messenger_messages m
+    LEFT JOIN users u
+      ON u.id=m.sender_id
+    LEFT JOIN messenger_conversation_nicknames mn
+      ON mn.conversation_id=m.conversation_id
+     AND mn.user_id=m.sender_id
+    LEFT JOIN messenger_messages ra
+      ON ra.id=m.reply_to_id
+    LEFT JOIN users ru
+      ON ru.id=ra.sender_id
+    LEFT JOIN messenger_conversation_nicknames rn
+      ON rn.conversation_id=m.conversation_id
+     AND rn.user_id=ra.sender_id
+    WHERE m.id=$1
+    LIMIT 1
+  `,[messageId]);
+
+  if (!result.rowCount) return null;
+
+  const row=result.rows[0];
+  const receipts=Array.isArray(row.receipts)?row.receipts:[];
+
+  let status='sent';
+  if (receipts.some(r=>r.readAt||r.readat)) status='read';
+  else if (receipts.some(r=>r.deliveredAt||r.deliveredat)) status='delivered';
+
+  return {
+    id:String(row.id),
+    conversationId:String(row.conversation_id),
+    senderId:row.sender_id?String(row.sender_id):'',
+    clientId:row.client_id||'',
+    type:'text',
+    body:row.body||'',
+    deleted:false,
+    forwarded:false,
+    editedAt:null,
+    createdAt:row.created_at,
+    sender:{
+      id:row.sender_id?String(row.sender_id):'',
+      name:row.sender_name||'Facebook user',
+      avatar:avatarDeliveryUrl(row.sender_id,row.sender_photo)
+    },
+    reply:row.reply_id ? {
+      id:String(row.reply_id),
+      body:row.reply_body||'',
+      type:row.reply_type||'text',
+      senderName:row.reply_sender_name||'Facebook user'
+    } : null,
+    attachments:[],
+    reactions:[],
+    receipts,
+    status,
+    sharedContent:null
+  };
+}
+
 async function messengerTouchConversation(conversationId) {
   await pool.query('UPDATE messenger_conversations SET updated_at=NOW() WHERE id=$1',[conversationId]);
 }
@@ -6637,7 +6724,7 @@ async function messengerFinalizeMessage(messageId, conversationId, senderId, fas
       messengerMemberIds(conversationId)
     ]);
 
-    const message = await loadMessengerMessage(messageId, senderId);
+    const message = await loadFreshMessengerTextMessage(messageId, senderId);
 
     if (message) {
       const payload = {
