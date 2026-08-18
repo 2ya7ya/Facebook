@@ -6545,25 +6545,17 @@ function messengerSendToUser(userId, payload) {
 
   let wirePayload = payload;
 
-  if (payload && payload.__benchmarkStartNs) {
+  if (payload && payload.__benchmarkContext?.startNs) {
     const wsSendMs =
-      Number(process.hrtime.bigint() - payload.__benchmarkStartNs) / 1e6;
+      Number(process.hrtime.bigint() - payload.__benchmarkContext.startNs) / 1e6;
 
-    const messageId = payload.message?.id;
-
-    if (messageId) {
-      const sample = messengerLatencySamples
-        .slice()
-        .reverse()
-        .find(item => String(item.messageId) === String(messageId));
-
-      if (sample && sample.wsSendMs == null) {
-        sample.wsSendMs = Number(wsSendMs.toFixed(3));
-      }
+    if (payload.__benchmarkContext.wsSendMs == null) {
+      payload.__benchmarkContext.wsSendMs =
+        Number(wsSendMs.toFixed(3));
     }
 
     wirePayload = { ...payload };
-    delete wirePayload.__benchmarkStartNs;
+    delete wirePayload.__benchmarkContext;
   }
 
   const encoded = JSON.stringify(wirePayload);
@@ -6840,7 +6832,7 @@ async function messengerFinalizeMessage(messageId, conversationId, senderId, fas
         type: 'message',
         conversationId: String(conversationId),
         message,
-        __benchmarkStartNs: benchmarkContext?.startNs || null
+        __benchmarkContext: benchmarkContext || null
       };
 
       for (const id of memberIds) {
@@ -6974,12 +6966,17 @@ app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth
     const insertMs=messengerBenchmarkMs(insertStart);
 
     const finalizeStart=process.hrtime.bigint();
+    const benchmarkContext = {
+      startNs: benchmarkStart,
+      wsSendMs: null
+    };
+
     const message=await messengerFinalizeMessage(
       inserted.rows[0].id,
       cid,
       request.user.id,
       true,
-      { startNs: benchmarkStart }
+      benchmarkContext
     );
     const finalizeMs=messengerBenchmarkMs(finalizeStart);
     const serverMs=messengerBenchmarkMs(benchmarkStart);
@@ -6991,7 +6988,9 @@ app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth
     messengerRecordLatency({
       at:new Date().toISOString(),
       messageId:String(inserted.rows[0].id),
-      ...benchmark
+      ...benchmark,
+      wsSendMs:
+        benchmarkContext?.wsSendMs ?? null
     });
     response.setHeader('Server-Timing',`messenger-insert;dur=${benchmark.insertMs}, messenger-finalize;dur=${benchmark.finalizeMs}, messenger-total;dur=${benchmark.serverMs}`);
     response.json({message,benchmark});
