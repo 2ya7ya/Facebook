@@ -6759,7 +6759,13 @@ app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth
   const benchmarkStart=process.hrtime.bigint();
   const cid=request.params.conversationId; if(!validNumericId(cid))return response.status(400).json({error:'Invalid conversation.'});
   try{
-    await ensureDatabase(); if(!(await messengerRequireMember(cid,request.user.id)))return response.status(403).json({error:'Conversation unavailable.'});if(await messengerConversationBlocked(cid))return response.status(403).json({error:'Messaging is unavailable because this conversation is blocked.'});
+    await ensureDatabase();
+    const [isMember, isBlocked] = await Promise.all([
+      messengerRequireMember(cid, request.user.id),
+      messengerConversationBlocked(cid)
+    ]);
+    if (!isMember) return response.status(403).json({error:'Conversation unavailable.'});
+    if (isBlocked) return response.status(403).json({error:'Messaging is unavailable because this conversation is blocked.'});
     const body=String(request.body?.body||'').trim().slice(0,8000); if(!body)return response.status(400).json({error:'Write a message.'});
     const clientId=String(request.body?.clientId||crypto.randomUUID()).slice(0,96); const replyTo=validNumericId(request.body?.replyToId)?String(request.body.replyToId):null;
     if(replyTo){const ok=await pool.query('SELECT 1 FROM messenger_messages WHERE id=$1 AND conversation_id=$2',[replyTo,cid]);if(!ok.rowCount)return response.status(400).json({error:'Reply target is unavailable.'});}
