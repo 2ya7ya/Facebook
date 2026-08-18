@@ -6618,6 +6618,268 @@ async function loadMessengerMessage(messageId, viewerId) {
     reactions:(Array.isArray(row.reactions)?row.reactions:[]).map(reaction=>({...reaction,avatar:avatarDeliveryUrl(reaction.userId||reaction.userid,''),mine:String(reaction.userId||reaction.userid)===String(viewerId)})),receipts,status,sharedContent
   };
 }
+async function loadMessengerMessages(messageIds, viewerId) {
+  if (!Array.isArray(messageIds) || !messageIds.length) return [];
+
+  const ids = messageIds.map(id => String(id));
+
+  const result = await pool.query(`
+    SELECT
+      m.id,
+      m.conversation_id,
+      m.sender_id,
+      m.client_id,
+      m.message_type,
+      m.body,
+      m.reply_to_id,
+      m.forwarded_from_id,
+      m.edited_at,
+      m.deleted_at,
+      m.created_at,
+
+      COALESCE(
+        NULLIF(BTRIM(mn.nickname),''),
+        u.full_name,
+        'Facebook user'
+      ) AS sender_name,
+
+      u.profile_photo AS sender_photo,
+
+      ra.id AS reply_id,
+      ra.body AS reply_body,
+      ra.message_type AS reply_type,
+
+      COALESCE(
+        NULLIF(BTRIM(rn.nickname),''),
+        ru.full_name,
+        'Facebook user'
+      ) AS reply_sender_name,
+
+      COALESCE((
+        SELECT json_agg(
+          json_build_object(
+            'id', a.id,
+            'name', a.file_name,
+            'mimeType', a.mime_type,
+            'size', a.byte_size
+          )
+          ORDER BY a.id
+        )
+        FROM messenger_attachments a
+        WHERE a.message_id=m.id
+      ), '[]'::json) AS attachments,
+
+      COALESCE((
+        SELECT json_agg(
+          json_build_object(
+            'userId', r.user_id,
+            'emoji', r.emoji,
+            'name', COALESCE(ruser.full_name,'Facebook user')
+          )
+          ORDER BY r.created_at
+        )
+        FROM messenger_message_reactions r
+        LEFT JOIN users ruser ON ruser.id=r.user_id
+        WHERE r.message_id=m.id
+      ), '[]'::json) AS reactions,
+
+      COALESCE((
+        SELECT json_agg(
+          json_build_object(
+            'userId', rc.user_id,
+            'deliveredAt', rc.delivered_at,
+            'readAt', rc.read_at
+          )
+        )
+        FROM messenger_message_receipts rc
+        WHERE rc.message_id=m.id
+      ), '[]'::json) AS receipts
+
+    FROM messenger_messages m
+
+    LEFT JOIN users u
+      ON u.id=m.sender_id
+
+    LEFT JOIN messenger_conversation_nicknames mn
+      ON mn.conversation_id=m.conversation_id
+     AND mn.user_id=m.sender_id
+
+    LEFT JOIN messenger_messages ra
+      ON ra.id=m.reply_to_id
+
+    LEFT JOIN users ru
+      ON ru.id=ra.sender_id
+
+    LEFT JOIN messenger_conversation_nicknames rn
+      ON rn.conversation_id=m.conversation_id
+     AND rn.user_id=ra.sender_id
+
+    WHERE
+      m.id = ANY($1::bigint[])
+
+      AND NOT EXISTS(
+        SELECT 1
+        FROM messenger_message_hides h
+        WHERE h.message_id=m.id
+          AND h.user_id=$2
+      )
+
+    ORDER BY array_position($1::bigint[], m.id)
+  `, [ids, viewerId]);
+
+  const messages = [];
+
+  for (const row of result.rows) {
+    const receipts = Array.isArray(row.receipts)
+      ? row.receipts
+      : [];
+
+    let status = 'sent';
+
+    if (receipts.some(r => r.readAt || r.readat)) {
+      status = 'read';
+    } else if (
+      receipts.some(r => r.deliveredAt || r.deliveredat)
+    ) {
+      status = 'delivered';
+    }
+
+    let sharedContent = null;
+
+    if (
+      !row.deleted_at &&
+      (
+        row.message_type === 'shared_reel' ||
+        row.message_type === 'shared_post'
+      )
+    ) {
+      const sharedType =
+        row.message_type === 'shared_reel'
+          ? 'reel'
+          : 'post';
+
+      sharedContent =
+        await messengerSharedContent(
+          sharedType,
+          row.body,
+          viewerId
+        ) || {
+          type: sharedType,
+          id: String(row.body || ''),
+          available: false
+        };
+    }
+
+    messages.push({
+      id: String(row.id),
+
+      conversationId:
+        String(row.conversation_id),
+
+      senderId:
+        row.sender_id
+          ? String(row.sender_id)
+          : '',
+
+      clientId:
+        row.client_id || '',
+
+      type:
+        row.message_type || 'text',
+
+      body:
+        row.deleted_at
+          ? ''
+          : (row.body || ''),
+
+      deleted:
+        Boolean(row.deleted_at),
+
+      forwarded:
+        Boolean(row.forwarded_from_id),
+
+      editedAt:
+        row.edited_at || null,
+
+      createdAt:
+        row.created_at,
+
+      sender: {
+        id:
+          row.sender_id
+            ? String(row.sender_id)
+            : '',
+
+        name:
+          row.sender_name ||
+          'Facebook user',
+
+        avatar:
+          avatarDeliveryUrl(
+            row.sender_id,
+            row.sender_photo
+          )
+      },
+
+      reply:
+        row.reply_id
+          ? {
+              id: String(row.reply_id),
+              body: row.reply_body || '',
+              type: row.reply_type || 'text',
+              senderName:
+                row.reply_sender_name ||
+                'Facebook user'
+            }
+          : null,
+
+      attachments:
+        (
+          Array.isArray(row.attachments)
+            ? row.attachments
+            : []
+        ).map(a => ({
+          id: String(a.id),
+          name: a.name || '',
+          mimeType:
+            a.mimeType ||
+            a.mimetype ||
+            'application/octet-stream',
+          size: Number(a.size) || 0,
+          url: messengerAttachmentUrl(a.id)
+        })),
+
+      reactions:
+        (
+          Array.isArray(row.reactions)
+            ? row.reactions
+            : []
+        ).map(reaction => ({
+          ...reaction,
+
+          avatar:
+            avatarDeliveryUrl(
+              reaction.userId ||
+              reaction.userid,
+              ''
+            ),
+
+          mine:
+            String(
+              reaction.userId ||
+              reaction.userid
+            ) === String(viewerId)
+        })),
+
+      receipts,
+      status,
+      sharedContent
+    });
+  }
+
+  return messages;
+}
+
 async function loadFreshMessengerTextMessage(messageId, viewerId) {
   const result = await pool.query(`
     SELECT
@@ -6895,8 +7157,21 @@ app.get('/api/messaging/conversations/:conversationId/messages', requireApiAuth,
     const limit=Math.max(1,Math.min(80,Number(request.query.limit)||40)); const before=validNumericId(request.query.before)?String(request.query.before):null;
     const values=[cid,request.user.id,limit+1]; let condition='m.conversation_id=$1 AND m.deleted_at IS NULL'; if(before){values.push(before);condition+=' AND m.id<$4';}
     const result=await pool.query(`SELECT m.id FROM messenger_messages m WHERE ${condition} AND NOT EXISTS(SELECT 1 FROM messenger_message_hides h WHERE h.message_id=m.id AND h.user_id=$2) ORDER BY m.id DESC LIMIT $3`,values);
-    const hasMore=result.rows.length>limit; const ids=result.rows.slice(0,limit).map(r=>String(r.id)).reverse(); const messages=[]; for(const id of ids){const msg=await loadMessengerMessage(id,request.user.id);if(msg)messages.push(msg);}
-    response.json({messages,nextBefore:hasMore&&ids.length?ids[0]:null});
+    const hasMore=result.rows.length>limit;
+    const ids=result.rows
+      .slice(0,limit)
+      .map(r=>String(r.id))
+      .reverse();
+
+    const messages=await loadMessengerMessages(
+      ids,
+      request.user.id
+    );
+
+    response.json({
+      messages,
+      nextBefore:hasMore&&ids.length?ids[0]:null
+    });
   }catch(error){console.error('Messenger messages failed:',error.message);response.status(500).json({error:'Could not load conversation.'});}
 });
 
