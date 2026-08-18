@@ -6599,12 +6599,35 @@ async function messengerTouchConversation(conversationId) {
   await pool.query('UPDATE messenger_conversations SET updated_at=NOW() WHERE id=$1',[conversationId]);
 }
 async function messengerCreateReceipts(messageId, conversationId, senderId) {
-  const members=await pool.query('SELECT user_id FROM messenger_conversation_members WHERE conversation_id=$1 AND user_id<>$2',[conversationId,senderId]);
-  for (const row of members.rows) {
-    const online=messengerUserOnline(row.user_id);
-    await pool.query(`INSERT INTO messenger_message_receipts(message_id,user_id,delivered_at) VALUES($1,$2,$3)
-      ON CONFLICT(message_id,user_id) DO UPDATE SET delivered_at=COALESCE(messenger_message_receipts.delivered_at,EXCLUDED.delivered_at)`,[messageId,row.user_id,online?new Date():null]);
-  }
+  const members = await pool.query(
+    'SELECT user_id FROM messenger_conversation_members WHERE conversation_id=$1 AND user_id<>$2',
+    [conversationId, senderId]
+  );
+
+  if (!members.rowCount) return;
+
+  const onlineIds = members.rows
+    .map(row => String(row.user_id))
+    .filter(id => messengerUserOnline(id));
+
+  await pool.query(`
+    INSERT INTO messenger_message_receipts (message_id, user_id, delivered_at)
+    SELECT
+      $1,
+      cm.user_id,
+      CASE
+        WHEN cm.user_id = ANY($3::bigint[]) THEN NOW()
+        ELSE NULL
+      END
+    FROM messenger_conversation_members cm
+    WHERE cm.conversation_id = $2
+      AND cm.user_id <> $4
+    ON CONFLICT(message_id, user_id)
+    DO UPDATE SET delivered_at = COALESCE(
+      messenger_message_receipts.delivered_at,
+      EXCLUDED.delivered_at
+    )
+  `, [messageId, conversationId, onlineIds, senderId]);
 }
 async function messengerFinalizeMessage(messageId, conversationId, senderId) {
   await messengerTouchConversation(conversationId);
