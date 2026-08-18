@@ -6685,46 +6685,81 @@ async function loadFreshMessengerTextMessage(messageId, viewerId) {
 async function messengerTouchConversation(conversationId) {
   await pool.query('UPDATE messenger_conversations SET updated_at=NOW() WHERE id=$1',[conversationId]);
 }
-async function messengerCreateReceipts(messageId, conversationId, senderId) {
-  const members = await pool.query(
-    'SELECT user_id FROM messenger_conversation_members WHERE conversation_id=$1 AND user_id<>$2',
-    [conversationId, senderId]
-  );
+async function messengerCreateReceipts(messageId, conversationId, senderId, knownMemberIds = null) {
+  let memberIds;
 
-  if (!members.rowCount) return;
+  if (Array.isArray(knownMemberIds)) {
+    memberIds = knownMemberIds
+      .map(id => String(id))
+      .filter(id => id !== String(senderId));
+  } else {
+    const members = await pool.query(
+      'SELECT user_id FROM messenger_conversation_members WHERE conversation_id=$1 AND user_id<>$2',
+      [conversationId, senderId]
+    );
+    memberIds = members.rows.map(row => String(row.user_id));
+  }
 
-  const onlineIds = members.rows
-    .map(row => String(row.user_id))
-    .filter(id => messengerUserOnline(id));
+  if (!memberIds.length) return {
+    receipts: [],
+    deliveredAt: null
+  };
+
+  const onlineIds = memberIds.filter(id => messengerUserOnline(id));
+  const deliveredAt = onlineIds.length ? new Date() : null;
 
   await pool.query(`
-    INSERT INTO messenger_message_receipts (message_id, user_id, delivered_at)
+    INSERT INTO messenger_message_receipts
+      (message_id, user_id, delivered_at)
     SELECT
       $1,
-      cm.user_id,
+      uid,
       CASE
-        WHEN cm.user_id = ANY($3::bigint[]) THEN NOW()
+        WHEN uid = ANY($3::bigint[]) THEN $4::timestamptz
         ELSE NULL
       END
-    FROM messenger_conversation_members cm
-    WHERE cm.conversation_id = $2
-      AND cm.user_id <> $4
+    FROM unnest($2::bigint[]) AS uid
     ON CONFLICT(message_id, user_id)
     DO UPDATE SET delivered_at = COALESCE(
       messenger_message_receipts.delivered_at,
       EXCLUDED.delivered_at
     )
-  `, [messageId, conversationId, onlineIds, senderId]);
+  `, [
+    messageId,
+    memberIds,
+    onlineIds,
+    deliveredAt
+  ]);
+
+  return {
+    receipts: memberIds.map(id => ({
+      userId: String(id),
+      deliveredAt: onlineIds.includes(String(id))
+        ? deliveredAt.toISOString()
+        : null,
+      readAt: null
+    })),
+    deliveredAt
+  };
 }
 async function messengerFinalizeMessage(messageId, conversationId, senderId, fastFreshText = false) {
   if (fastFreshText) {
-    const [, , memberIds] = await Promise.all([
+    const [, memberIds] = await Promise.all([
       messengerTouchConversation(conversationId),
-      messengerCreateReceipts(messageId, conversationId, senderId),
       messengerMemberIds(conversationId)
     ]);
 
-    const message = await loadFreshMessengerTextMessage(messageId, senderId);
+    const [receiptResult, message] = await Promise.all([
+      messengerCreateReceipts(messageId, conversationId, senderId, memberIds),
+      loadFreshMessengerTextMessage(messageId, senderId)
+    ]);
+
+    if (message && receiptResult) {
+      message.receipts = receiptResult.receipts;
+      message.status = receiptResult.receipts.some(r => r.deliveredAt)
+        ? 'delivered'
+        : 'sent';
+    }
 
     if (message) {
       const payload = {
