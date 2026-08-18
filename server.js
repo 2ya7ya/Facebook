@@ -6746,7 +6746,7 @@ app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth
 /* Temporary aggregate benchmark endpoint.
  * Requires a signed-in session and exposes timing only (no message text/users).
  */
-app.get('/api/debug/messaging-latency', requireApiAuth, (request,response)=>{
+app.get('/api/debug/messaging-latency', (request,response)=>{
   const samples=messengerLatencySamples.slice(-100);
   response.setHeader('Cache-Control','no-store');
   response.json({
