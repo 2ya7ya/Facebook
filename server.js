@@ -42,16 +42,6 @@ app.use((request, response, next) => {
   response.setHeader('Accept-CH', 'Sec-CH-UA-Model, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version, Sec-CH-UA-Full-Version-List, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, ECT, Downlink, Save-Data');
   next();
 });
-app.use((request, response, next) => {
-  if (
-    request.method === 'POST' &&
-    /^\/api\/messaging\/conversations\/[^/]+\/messages$/.test(request.path)
-  ) {
-    request.messengerBenchmarkStartNs = process.hrtime.bigint();
-  }
-  next();
-});
-
 app.use(express.json({ limit: '72mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
@@ -6511,33 +6501,6 @@ const messengerTypingLast = new Map();
  * Keeps only timing metadata in memory; no message bodies or user identifiers.
  * Samples reset when the Node process restarts.
  */
-const messengerLatencySamples = [];
-function messengerBenchmarkMs(startNs) {
-  return Number(process.hrtime.bigint() - startNs) / 1e6;
-}
-function messengerRecordLatency(sample) {
-  messengerLatencySamples.push(sample);
-  if (messengerLatencySamples.length > 200) messengerLatencySamples.splice(0, messengerLatencySamples.length - 200);
-}
-function messengerLatencySummary(samples) {
-  const keys = ['preRouteMs', 'insertMs', 'finalizeMs', 'wsSendMs', 'serverMs'];
-  const result = {};
-  for (const key of keys) {
-    const values = samples.map(item => Number(item[key])).filter(Number.isFinite).sort((a,b)=>a-b);
-    if (!values.length) { result[key] = null; continue; }
-    const avg = values.reduce((a,b)=>a+b,0) / values.length;
-    const p50 = values[Math.floor((values.length - 1) * 0.50)];
-    const p95 = values[Math.floor((values.length - 1) * 0.95)];
-    result[key] = {
-      avg: Number(avg.toFixed(3)),
-      min: Number(values[0].toFixed(3)),
-      p50: Number(p50.toFixed(3)),
-      p95: Number(p95.toFixed(3)),
-      max: Number(values[values.length - 1].toFixed(3))
-    };
-  }
-  return result;
-}
 
 function messengerSocketSet(userId) {
   const key = String(userId);
@@ -6552,28 +6515,12 @@ function messengerUserOnline(userId) {
 function messengerSendToUser(userId, payload) {
   const set = messengerSocketsByUser.get(String(userId));
   if (!set) return;
-
-  let wirePayload = payload;
-
-  if (payload && payload.__benchmarkContext?.startNs) {
-    const wsSendMs =
-      Number(process.hrtime.bigint() - payload.__benchmarkContext.startNs) / 1e6;
-
-    if (payload.__benchmarkContext.wsSendMs == null) {
-      payload.__benchmarkContext.wsSendMs =
-        Number(wsSendMs.toFixed(3));
-    }
-
-    wirePayload = { ...payload };
-    delete wirePayload.__benchmarkContext;
-  }
-
-  const encoded = JSON.stringify(wirePayload);
-
+  const encoded = JSON.stringify(payload);
   for (const socket of set) if (socket.readyState === WebSocket.OPEN) {
     try { socket.send(encoded); } catch (_error) {}
   }
 }
+
 async function messengerMemberIds(conversationId) {
   const result = await pool.query('SELECT user_id FROM messenger_conversation_members WHERE conversation_id=$1', [conversationId]);
   return result.rows.map(row => String(row.user_id));
@@ -6818,7 +6765,7 @@ async function messengerCreateReceipts(messageId, conversationId, senderId, know
     deliveredAt
   };
 }
-async function messengerFinalizeMessage(messageId, conversationId, senderId, fastFreshText = false, benchmarkContext = null) {
+async function messengerFinalizeMessage(messageId, conversationId, senderId, fastFreshText = false) {
   if (fastFreshText) {
     const [, memberIds] = await Promise.all([
       messengerTouchConversation(conversationId),
@@ -6841,8 +6788,7 @@ async function messengerFinalizeMessage(messageId, conversationId, senderId, fas
       const payload = {
         type: 'message',
         conversationId: String(conversationId),
-        message,
-        __benchmarkContext: benchmarkContext || null
+        message
       };
 
       for (const id of memberIds) {
@@ -6955,74 +6901,83 @@ app.get('/api/messaging/conversations/:conversationId/messages', requireApiAuth,
 });
 
 app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth, async (request,response)=>{
-  const benchmarkStart =
-    request.messengerBenchmarkStartNs || process.hrtime.bigint();
-  const preRouteMs = messengerBenchmarkMs(benchmarkStart);
-  const cid=request.params.conversationId; if(!validNumericId(cid))return response.status(400).json({error:'Invalid conversation.'});
+  const cid=request.params.conversationId;
+  if(!validNumericId(cid))return response.status(400).json({error:'Invalid conversation.'});
+
   try{
     await ensureDatabase();
-    const [isMember, isBlocked] = await Promise.all([
-      messengerRequireMember(cid, request.user.id),
+
+    const [isMember,isBlocked]=await Promise.all([
+      messengerRequireMember(cid,request.user.id),
       messengerConversationBlocked(cid)
     ]);
-    if (!isMember) return response.status(403).json({error:'Conversation unavailable.'});
-    if (isBlocked) return response.status(403).json({error:'Messaging is unavailable because this conversation is blocked.'});
-    const body=String(request.body?.body||'').trim().slice(0,8000); if(!body)return response.status(400).json({error:'Write a message.'});
-    const clientId=String(request.body?.clientId||crypto.randomUUID()).slice(0,96); const replyTo=validNumericId(request.body?.replyToId)?String(request.body.replyToId):null;
-    if(replyTo){const ok=await pool.query('SELECT 1 FROM messenger_messages WHERE id=$1 AND conversation_id=$2',[replyTo,cid]);if(!ok.rowCount)return response.status(400).json({error:'Reply target is unavailable.'});}
 
-    const insertStart=process.hrtime.bigint();
-    let inserted=await pool.query(`INSERT INTO messenger_messages(conversation_id,sender_id,client_id,message_type,body,reply_to_id) VALUES($1,$2,$3,'text',$4,$5)
-      ON CONFLICT(sender_id,client_id) DO NOTHING RETURNING id`,[cid,request.user.id,clientId,body,replyTo]);
-    if(!inserted.rowCount)inserted=await pool.query('SELECT id FROM messenger_messages WHERE sender_id=$1 AND client_id=$2 LIMIT 1',[request.user.id,clientId]);
-    const insertMs=messengerBenchmarkMs(insertStart);
+    if(!isMember)
+      return response.status(403).json({error:'Conversation unavailable.'});
 
-    const finalizeStart=process.hrtime.bigint();
-    const benchmarkContext = {
-      startNs: benchmarkStart,
-      wsSendMs: null
-    };
+    if(isBlocked)
+      return response.status(403).json({
+        error:'Messaging is unavailable because this conversation is blocked.'
+      });
+
+    const body=String(request.body?.body||'').trim().slice(0,8000);
+    if(!body)return response.status(400).json({error:'Write a message.'});
+
+    const clientId=String(
+      request.body?.clientId||crypto.randomUUID()
+    ).slice(0,96);
+
+    const replyTo=validNumericId(request.body?.replyToId)
+      ?String(request.body.replyToId)
+      :null;
+
+    if(replyTo){
+      const ok=await pool.query(
+        'SELECT 1 FROM messenger_messages WHERE id=$1 AND conversation_id=$2',
+        [replyTo,cid]
+      );
+
+      if(!ok.rowCount)
+        return response.status(400).json({
+          error:'Reply target is unavailable.'
+        });
+    }
+
+    let inserted=await pool.query(`
+      INSERT INTO messenger_messages(
+        conversation_id,
+        sender_id,
+        client_id,
+        message_type,
+        body,
+        reply_to_id
+      )
+      VALUES($1,$2,$3,'text',$4,$5)
+      ON CONFLICT(sender_id,client_id)
+      DO NOTHING
+      RETURNING id
+    `,[cid,request.user.id,clientId,body,replyTo]);
+
+    if(!inserted.rowCount){
+      inserted=await pool.query(
+        'SELECT id FROM messenger_messages WHERE sender_id=$1 AND client_id=$2 LIMIT 1',
+        [request.user.id,clientId]
+      );
+    }
 
     const message=await messengerFinalizeMessage(
       inserted.rows[0].id,
       cid,
       request.user.id,
-      true,
-      benchmarkContext
+      true
     );
-    const finalizeMs=messengerBenchmarkMs(finalizeStart);
-    const serverMs=messengerBenchmarkMs(benchmarkStart);
-    const benchmark={
-      preRouteMs:Number(preRouteMs.toFixed(3)),
-      insertMs:Number(insertMs.toFixed(3)),
-      finalizeMs:Number(finalizeMs.toFixed(3)),
-      serverMs:Number(serverMs.toFixed(3))
-    };
-    messengerRecordLatency({
-      at:new Date().toISOString(),
-      messageId:String(inserted.rows[0].id),
-      ...benchmark,
-      wsSendMs:
-        benchmarkContext?.wsSendMs ?? null
-    });
-    response.setHeader('Server-Timing',`messenger-insert;dur=${benchmark.insertMs}, messenger-finalize;dur=${benchmark.finalizeMs}, messenger-total;dur=${benchmark.serverMs}`);
-    response.json({message,benchmark});
-  }catch(error){console.error('Messenger send failed:',error.message);response.status(500).json({error:'Could not send message.'});}
-});
 
+    response.json({message});
 
-/* Temporary aggregate benchmark endpoint.
- * Requires a signed-in session and exposes timing only (no message text/users).
- */
-app.get('/api/debug/messaging-latency', (request,response)=>{
-  const samples=messengerLatencySamples.slice(-100);
-  response.setHeader('Cache-Control','no-store');
-  response.json({
-    ok:true,
-    count:samples.length,
-    summary:messengerLatencySummary(samples),
-    samples
-  });
+  }catch(error){
+    console.error('Messenger send failed:',error.message);
+    response.status(500).json({error:'Could not send message.'});
+  }
 });
 
 app.post('/api/messaging/conversations/:conversationId/share', requireApiAuth, async (request,response)=>{
