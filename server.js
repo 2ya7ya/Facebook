@@ -7191,6 +7191,20 @@ app.get('/api/messaging/conversations/:conversationId/messages', requireApiAuth,
   }catch(error){console.error('Messenger messages failed:',error.message);response.status(500).json({error:'Could not load conversation.'});}
 });
 
+app.get('/api/messaging/conversations/:conversationId/media', requireApiAuth, async (request,response)=>{
+  const cid=request.params.conversationId;if(!validNumericId(cid))return response.status(400).json({error:'Invalid conversation.'});
+  try{
+    await ensureDatabase();if(!(await messengerRequireMember(cid,request.user.id)))return response.status(403).json({error:'Conversation unavailable.'});
+    const result=await pool.query(`SELECT DISTINCT m.id FROM messenger_messages m JOIN messenger_attachments a ON a.message_id=m.id
+      WHERE m.conversation_id=$1 AND m.deleted_at IS NULL AND m.message_type IN ('image','video')
+      AND LOWER(COALESCE(a.file_name,'')) NOT LIKE 'sticker-%'
+      AND NOT EXISTS(SELECT 1 FROM messenger_message_hides h WHERE h.message_id=m.id AND h.user_id=$2)
+      ORDER BY m.id DESC LIMIT 30`,[cid,request.user.id]);
+    const ids=result.rows.map(row=>String(row.id));
+    response.json({messages:await loadMessengerMessages(ids,request.user.id)});
+  }catch(error){console.error('Messenger shared media failed:',error.message);response.status(500).json({error:'Could not load shared media.'});}
+});
+
 app.post('/api/messaging/conversations/:conversationId/messages', requireApiAuth, async (request,response)=>{
   const cid=request.params.conversationId;
   if(!validNumericId(cid))return response.status(400).json({error:'Invalid conversation.'});
@@ -7518,7 +7532,7 @@ app.delete('/api/messaging/conversations/:conversationId/leave', requireApiAuth,
 
 app.get('/api/messaging/search', requireApiAuth, async (request,response)=>{
   try{await ensureDatabase();const q=String(request.query.q||'').trim().slice(0,120);if(!q)return response.json({results:[]});const cid=validNumericId(request.query.conversationId)?String(request.query.conversationId):null;const values=[request.user.id,`%${q}%`];let extra='';if(cid){values.push(cid);extra=' AND m.conversation_id=$3';}
-    const result=await pool.query(`SELECT m.id,m.conversation_id FROM messenger_messages m JOIN messenger_conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=$1 WHERE m.deleted_at IS NULL AND m.message_type<>'system' AND m.body ILIKE $2 ${extra} ORDER BY m.id DESC LIMIT 50`,values);const hydrated=await Promise.all(result.rows.map(row=>loadMessengerMessage(row.id,request.user.id)));const messages=hydrated.filter(Boolean);response.json({results:messages});
+    const result=await pool.query(`SELECT m.id FROM messenger_messages m JOIN messenger_conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=$1 WHERE m.deleted_at IS NULL AND m.message_type<>'system' AND m.body ILIKE $2 ${extra} ORDER BY m.id DESC LIMIT 50`,values);const messages=await loadMessengerMessages(result.rows.map(row=>row.id),request.user.id);response.json({results:messages});
   }catch(error){console.error('Messenger search failed:',error.message);response.status(500).json({error:'Could not search messages.'});}
 });
 
