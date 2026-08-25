@@ -7518,7 +7518,7 @@ app.delete('/api/messaging/conversations/:conversationId/leave', requireApiAuth,
 
 app.get('/api/messaging/search', requireApiAuth, async (request,response)=>{
   try{await ensureDatabase();const q=String(request.query.q||'').trim().slice(0,120);if(!q)return response.json({results:[]});const cid=validNumericId(request.query.conversationId)?String(request.query.conversationId):null;const values=[request.user.id,`%${q}%`];let extra='';if(cid){values.push(cid);extra=' AND m.conversation_id=$3';}
-    const result=await pool.query(`SELECT m.id,m.conversation_id FROM messenger_messages m JOIN messenger_conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=$1 WHERE m.deleted_at IS NULL AND m.message_type<>'system' AND m.body ILIKE $2 ${extra} ORDER BY m.id DESC LIMIT 50`,values);const messages=[];for(const row of result.rows){const msg=await loadMessengerMessage(row.id,request.user.id);if(msg)messages.push(msg);}response.json({results:messages});
+    const result=await pool.query(`SELECT m.id,m.conversation_id FROM messenger_messages m JOIN messenger_conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=$1 WHERE m.deleted_at IS NULL AND m.message_type<>'system' AND m.body ILIKE $2 ${extra} ORDER BY m.id DESC LIMIT 50`,values);const hydrated=await Promise.all(result.rows.map(row=>loadMessengerMessage(row.id,request.user.id)));const messages=hydrated.filter(Boolean);response.json({results:messages});
   }catch(error){console.error('Messenger search failed:',error.message);response.status(500).json({error:'Could not search messages.'});}
 });
 
