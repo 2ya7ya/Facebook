@@ -7154,6 +7154,21 @@ app.get('/api/messaging/conversations/:conversationId/messages', requireApiAuth,
   const cid=request.params.conversationId; if(!validNumericId(cid))return response.status(400).json({error:'Invalid conversation.'});
   try{
     await ensureDatabase(); if(!(await messengerRequireMember(cid,request.user.id)))return response.status(403).json({error:'Conversation unavailable.'});
+    const around=validNumericId(request.query.around)?String(request.query.around):null;
+    if(around){
+      const nearby=await pool.query(`SELECT id FROM (
+        (SELECT m.id FROM messenger_messages m WHERE m.conversation_id=$1 AND m.deleted_at IS NULL AND m.id<=$3
+          AND NOT EXISTS(SELECT 1 FROM messenger_message_hides h WHERE h.message_id=m.id AND h.user_id=$2) ORDER BY m.id DESC LIMIT 40)
+        UNION
+        (SELECT m.id FROM messenger_messages m WHERE m.conversation_id=$1 AND m.deleted_at IS NULL AND m.id>$3
+          AND NOT EXISTS(SELECT 1 FROM messenger_message_hides h WHERE h.message_id=m.id AND h.user_id=$2) ORDER BY m.id ASC LIMIT 40)
+      ) AS selected ORDER BY id`,[cid,request.user.id,around]);
+      const ids=nearby.rows.map(row=>String(row.id));
+      const messages=await loadMessengerMessages(ids,request.user.id);
+      let nextBefore=null;
+      if(ids.length){const older=await pool.query(`SELECT 1 FROM messenger_messages m WHERE m.conversation_id=$1 AND m.deleted_at IS NULL AND m.id<$3 AND NOT EXISTS(SELECT 1 FROM messenger_message_hides h WHERE h.message_id=m.id AND h.user_id=$2) LIMIT 1`,[cid,request.user.id,ids[0]]);if(older.rowCount)nextBefore=ids[0];}
+      return response.json({messages,nextBefore});
+    }
     const limit=Math.max(1,Math.min(80,Number(request.query.limit)||40)); const before=validNumericId(request.query.before)?String(request.query.before):null;
     const values=[cid,request.user.id,limit+1]; let condition='m.conversation_id=$1 AND m.deleted_at IS NULL'; if(before){values.push(before);condition+=' AND m.id<$4';}
     const result=await pool.query(`SELECT m.id FROM messenger_messages m WHERE ${condition} AND NOT EXISTS(SELECT 1 FROM messenger_message_hides h WHERE h.message_id=m.id AND h.user_id=$2) ORDER BY m.id DESC LIMIT $3`,values);
@@ -7465,7 +7480,7 @@ app.get('/api/messaging/conversations/:conversationId/details', requireApiAuth, 
 
 app.patch('/api/messaging/conversations/:conversationId/group', requireApiAuth, async (request,response)=>{
   const cid=request.params.conversationId;if(!validNumericId(cid))return response.status(400).json({error:'Invalid group.'});
-  try{await ensureDatabase();const member=await pool.query(`SELECT 1 FROM messenger_conversations c JOIN messenger_conversation_members cm ON cm.conversation_id=c.id WHERE c.id=$1 AND c.conversation_type='group' AND cm.user_id=$2`,[cid,request.user.id]);if(!member.rowCount)return response.status(403).json({error:'This group is unavailable.'});const title=String(request.body?.title||'').trim().slice(0,160);if(!title)return response.status(400).json({error:'Enter a group name.'});const image=String(request.body?.image||'');if(image&&(!/^data:image\/(?:png|jpeg|webp);base64,/i.test(image)||image.length>180000))return response.status(400).json({error:'Choose a smaller image.'});await pool.query(`UPDATE messenger_conversations SET title=$1,named_by=$2,group_image=CASE WHEN $3='' THEN group_image ELSE $3 END,updated_at=NOW() WHERE id=$4`,[title,request.user.id,image,cid]);await messengerBroadcastConversationSummaries(cid);const conversation=await messengerConversationSummary(cid,request.user.id);response.json({conversation});}
+  try{await ensureDatabase();const member=await pool.query(`SELECT c.title,c.group_image FROM messenger_conversations c JOIN messenger_conversation_members cm ON cm.conversation_id=c.id WHERE c.id=$1 AND c.conversation_type='group' AND cm.user_id=$2`,[cid,request.user.id]);if(!member.rowCount)return response.status(403).json({error:'This group is unavailable.'});const title=String(request.body?.title||'').trim().slice(0,160);if(!title)return response.status(400).json({error:'Enter a group name.'});const image=String(request.body?.image||'');if(image&&(!/^data:image\/(?:png|jpeg|webp);base64,/i.test(image)||image.length>180000))return response.status(400).json({error:'Choose a smaller image.'});const titleChanged=title!==String(member.rows[0].title||''),imageChanged=Boolean(image&&image!==String(member.rows[0].group_image||''));await pool.query(`UPDATE messenger_conversations SET title=$1,named_by=$2,group_image=CASE WHEN $3='' THEN group_image ELSE $3 END,updated_at=NOW() WHERE id=$4`,[title,request.user.id,image,cid]);if(titleChanged||imageChanged){const actor=await pool.query(`SELECT COALESCE(NULLIF(BTRIM(full_name),''),'Facebook user') AS name FROM users WHERE id=$1`,[request.user.id]),name=actor.rows[0]?.name||'Facebook user',updates=[];if(titleChanged)updates.push(`${name} changed the group name to “${title}”.`);if(imageChanged)updates.push(`${name} changed the group photo.`);for(const body of updates){const inserted=await pool.query(`INSERT INTO messenger_messages(conversation_id,sender_id,client_id,message_type,body) VALUES($1,$2,$3,'system',$4) RETURNING id`,[cid,request.user.id,crypto.randomUUID(),body]);await messengerCreateReceipts(inserted.rows[0].id,cid,request.user.id);await messengerBroadcastPersonalizedMessage(cid,'message',inserted.rows[0].id);}}await messengerBroadcastConversationSummaries(cid);const conversation=await messengerConversationSummary(cid,request.user.id);response.json({conversation});}
   catch(error){console.error('Messenger group update failed:',error.message);response.status(500).json({error:'Could not update the group.'});}
 });
 
