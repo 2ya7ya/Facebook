@@ -7074,7 +7074,8 @@ async function messengerConversationSummary(conversationId, viewerId) {
                 WHERE rr.user_id=$2 AND rr.read_at IS NULL AND mm.conversation_id=c.id AND mm.deleted_at IS NULL),0) AS unread_count,
       COALESCE((SELECT json_agg(json_build_object('id',u.id,'name',COALESCE(NULLIF(BTRIM(n.nickname),''),u.full_name,'Facebook user'),'originalName',COALESCE(u.full_name,'Facebook user'),'nickname',COALESCE(n.nickname,''),'avatar',u.profile_photo,'lastSeenAt',u.last_seen_at,'role',mx.role,'joinedAt',mx.joined_at) ORDER BY mx.joined_at,mx.user_id)
                 FROM messenger_conversation_members mx JOIN users u ON u.id=mx.user_id LEFT JOIN messenger_conversation_nicknames n ON n.conversation_id=mx.conversation_id AND n.user_id=mx.user_id WHERE mx.conversation_id=c.id),'[]'::json) AS participants,
-      lm.id AS last_id,lm.sender_id AS last_sender_id,lm.message_type AS last_type,lm.body AS last_body,lm.deleted_at AS last_deleted,lm.created_at AS last_created_at
+      lm.id AS last_id,lm.sender_id AS last_sender_id,lm.message_type AS last_type,lm.body AS last_body,lm.deleted_at AS last_deleted,lm.created_at AS last_created_at,
+      EXISTS(SELECT 1 FROM messenger_attachments la WHERE la.message_id=lm.id AND LOWER(la.file_name) LIKE 'sticker-%') AS last_sticker
     FROM messenger_conversations c
     JOIN messenger_conversation_members cm ON cm.conversation_id=c.id AND cm.user_id=$2
     LEFT JOIN LATERAL (SELECT id,sender_id,message_type,body,deleted_at,created_at FROM messenger_messages
@@ -7088,12 +7089,12 @@ async function messengerConversationSummary(conversationId, viewerId) {
   const name=r.conversation_type==='group'?(r.title||'Group chat'):(others[0]?.name||'Conversation');
   const avatar=r.conversation_type==='group'?(r.group_image||''):(others[0]?.avatar||'');
   let lastText='';
-  if(r.last_id){ if(r.last_deleted)lastText='Message deleted'; else if(r.last_type==='image')lastText='📷 Photo'; else if(r.last_type==='video')lastText='🎬 Video'; else if(r.last_type==='audio')lastText='🎤 Voice message'; else if(r.last_type==='file')lastText='📎 File'; else if(r.last_type==='shared_reel')lastText='Shared a reel'; else if(r.last_type==='shared_post')lastText='Shared a post'; else lastText=String(r.last_body||''); }
+  if(r.last_id){ if(r.last_deleted)lastText='Message deleted'; else if(r.last_sticker)lastText='Sent a sticker'; else if(r.last_type==='image')lastText='Sent a photo'; else if(r.last_type==='video')lastText='Sent a video'; else if(r.last_type==='audio')lastText='Voice message'; else if(r.last_type==='file')lastText='File'; else if(r.last_type==='shared_reel')lastText='Shared a reel'; else if(r.last_type==='shared_post')lastText='Shared a post'; else lastText=String(r.last_body||''); }
   const blockState=others[0]?await pool.query(`SELECT
     EXISTS(SELECT 1 FROM messenger_user_blocks WHERE blocker_id=$1 AND blocked_id=$2) AS blocked_by_me,
     EXISTS(SELECT 1 FROM messenger_user_blocks WHERE blocker_id=$2 AND blocked_id=$1) AS blocked_by_other`,[viewerId,others[0].id]):{rows:[{blocked_by_me:false,blocked_by_other:false}]};
   const namedBy=participants.find(p=>String(p.id)===String(r.named_by));
-  return {id:String(r.id),type:r.conversation_type,name,avatar,participants,theme:r.theme_key||'default',createdBy:r.created_by?String(r.created_by):'',createdAt:r.created_at,isOwner:String(r.created_by)===String(viewerId),namedBy:r.named_by?String(r.named_by):'',namedByName:namedBy?.name||'',namedByIsSelf:String(r.named_by)===String(viewerId),blockedByMe:Boolean(blockState.rows[0]?.blocked_by_me),blockedByOther:Boolean(blockState.rows[0]?.blocked_by_other),updatedAt:r.updated_at,unread:Number(r.unread_count)||0,pinned:Boolean(r.pinned),archived:Boolean(r.archived),mutedUntil:r.muted_until||null,lastMessage:r.last_id?{id:String(r.last_id),senderId:r.last_sender_id?String(r.last_sender_id):'',type:r.last_type,body:lastText,createdAt:r.last_created_at}:null};
+  return {id:String(r.id),type:r.conversation_type,name,avatar,participants,theme:r.theme_key||'default',createdBy:r.created_by?String(r.created_by):'',createdAt:r.created_at,isOwner:String(r.created_by)===String(viewerId),namedBy:r.named_by?String(r.named_by):'',namedByName:namedBy?.name||'',namedByIsSelf:String(r.named_by)===String(viewerId),blockedByMe:Boolean(blockState.rows[0]?.blocked_by_me),blockedByOther:Boolean(blockState.rows[0]?.blocked_by_other),updatedAt:r.updated_at,unread:Number(r.unread_count)||0,pinned:Boolean(r.pinned),archived:Boolean(r.archived),mutedUntil:r.muted_until||null,lastMessage:r.last_id?{id:String(r.last_id),senderId:r.last_sender_id?String(r.last_sender_id):'',type:r.last_type,body:lastText,sticker:Boolean(r.last_sticker),createdAt:r.last_created_at}:null};
 }
 
 app.get('/api/messaging/inbox', requireApiAuth, async (request,response)=>{
