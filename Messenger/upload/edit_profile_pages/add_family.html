@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script>window.alert=function(){};</script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add to family</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+        
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: #ffffff;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            color: #1c1e21;
+            overflow: hidden;
+        }
+        
+        .header {
+            display: flex;
+            align-items: center;
+            height: 56px;
+            padding: 0 16px;
+            background: #fff;
+            flex-shrink: 0;
+            z-index: 10;
+        }
+        .back-icon {
+            width: 40px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+        }
+        .header-title {
+            flex-grow: 1;
+            text-align: center;
+            font-size: 20px;
+            font-weight: 700;
+            margin-right: 40px;
+        }
+        
+        .content {
+            padding: 16px;
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+        
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .input-field {
+            width: 100%;
+            height: 56px;
+            padding: 0 16px;
+            font-size: 18px;
+            color: #1c1e21;
+            border: 1px solid #ced0d4;
+            border-radius: 12px;
+            outline: none;
+            background-color: #fff;
+        }
+        
+        .input-field::placeholder {
+            color: #65676b;
+        }
+        
+        .input-field:focus {
+            border-color: #1878F3;
+        }
+        
+        .select-wrapper {
+            position: relative;
+            cursor: pointer;
+        }
+        
+        .select-box {
+            width: 100%;
+            height: 56px;
+            padding: 0 16px;
+            font-size: 18px;
+            color: #65676b;
+            border: 1px solid #ced0d4;
+            border-radius: 12px;
+            background-color: #fff;
+            display: flex;
+            align-items: center;
+        }
+        
+        .select-box.has-value {
+            color: #1c1e21;
+        }
+        
+        .arrow-down {
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-top: 6px solid #65676b;
+            pointer-events: none;
+        }
+        
+        .footer {
+            padding: 16px;
+            padding-bottom: 24px;
+            background-color: #fff;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            z-index: 10;
+        }
+        
+        .submit-button {
+            width: 100%;
+            height: 44px;
+            background-color: #e4e6eb;
+            color: #bcc0c4;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: not-allowed;
+            transition: all 0.2s ease;
+        }
+        
+        .submit-button.active {
+            background-color: #1878F3;
+            color: #ffffff;
+            cursor: pointer;
+        }
+
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease;
+            z-index: 100;
+        }
+        .overlay.show { opacity: 1; visibility: visible; }
+        
+        .bottom-sheet {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background: #fff;
+            border-top-left-radius: 16px;
+            border-top-right-radius: 16px;
+            transform: translateY(100%);
+            transition: transform 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+            z-index: 101;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            touch-action: none;
+            overflow: hidden;
+            /* Hide the sheet when it's translated out of view */
+            pointer-events: none;
+        }
+        .bottom-sheet.active {
+            pointer-events: auto;
+        }
+        .sheet-handle { width: 40px; height: 4px; background: #ced0d4; border-radius: 2px; margin: 12px auto; }
+        .sheet-header { text-align: center; padding: 0 16px 16px; font-size: 18px; font-weight: 700; border-bottom: 1px solid #f0f2f5; }
+        .sheet-options { overflow-y: auto; padding: 8px 0; flex: 1; }
+        .option-item { padding: 14px 24px; font-size: 18px; color: #1c1e21; cursor: pointer; }
+        .option-item:active { background-color: #f0f2f5; }
+    </style>
+
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="back-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+        </div>
+        <div class="header-title">Add to family</div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+        <div class="input-group">
+            <input type="text" class="input-field" id="name-input" placeholder="Name">
+            
+            <div class="select-wrapper" id="relationship-trigger">
+                <div class="select-box" id="relationship-display">Relationship</div>
+                <div class="arrow-down"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+        <button class="submit-button" id="submit-btn" disabled>Add to family</button>
+    </div>
+
+    <!-- Bottom Sheet -->
+    <div class="overlay" id="overlay"></div>
+    <div class="bottom-sheet" id="bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">Relationship</div>
+        <div class="sheet-options">
+            <div class="option-item">Mother</div>
+            <div class="option-item">Father</div>
+            <div class="option-item">Daughter</div>
+            <div class="option-item">Son</div>
+            <div class="option-item">Sister</div>
+            <div class="option-item">Brother</div>
+            <div class="option-item">Aunt</div>
+            <div class="option-item">Uncle</div>
+            <div class="option-item">Niece</div>
+            <div class="option-item">Nephew</div>
+            <div class="option-item">Cousin (female)</div>
+            <div class="option-item">Cousin (male)</div>
+            <div class="option-item">Grandmother</div>
+            <div class="option-item">Grandfather</div>
+            <div class="option-item">Granddaughter</div>
+            <div class="option-item">Grandson</div>
+            <div class="option-item">Stepmother</div>
+            <div class="option-item">Stepfather</div>
+            <div class="option-item">Stepdaughter</div>
+            <div class="option-item">Stepson</div>
+            <div class="option-item">Stepsister</div>
+            <div class="option-item">Stepbrother</div>
+        </div>
+    </div>
+
+    <script>
+        const nameInput = document.getElementById('name-input');
+        const relTrigger = document.getElementById('relationship-trigger');
+        const relDisplay = document.getElementById('relationship-display');
+        const submitBtn = document.getElementById('submit-btn');
+        const overlay = document.getElementById('overlay');
+        const sheet = document.getElementById('bottom-sheet');
+        const options = document.querySelectorAll('.option-item');
+
+        let selectedRelationship = '';
+        let isSheetOpen = false;
+        let isDragging = false;
+        let startY = 0;
+        let currentY = 0;
+
+        // ── Open / Close helpers ──────────────────────────────
+
+        function openSheet() {
+            if (isSheetOpen) return;
+            isSheetOpen = true;
+            sheet.classList.add('active');
+
+            // Remove transition so we can set start position instantly
+            sheet.style.transition = 'none';
+            sheet.style.transform = 'translateY(100%)';
+            // Force reflow
+            void sheet.offsetHeight;
+
+            // Now animate in
+            sheet.style.transition = 'transform 0.4s cubic-bezier(0.32, 0.72, 0, 1)';
+            sheet.style.transform = 'translateY(0)';
+            overlay.classList.add('show');
+        }
+
+        function closeSheet() {
+            if (!isSheetOpen) return;
+            isSheetOpen = false;
+            isDragging = false;
+            overlay.classList.remove('show');
+
+            sheet.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+            sheet.style.transform = 'translateY(100%)';
+
+            sheet.addEventListener('transitionend', function onEnd() {
+                sheet.removeEventListener('transitionend', onEnd);
+                sheet.classList.remove('active');
+                sheet.style.transition = '';
+            });
+        }
+
+        // ── Button state ────────────────────────────────────
+
+        function checkChanges() {
+            const nameValue = nameInput.value.trim();
+            if (nameValue !== '' || selectedRelationship !== '') {
+                submitBtn.classList.add('active');
+                submitBtn.disabled = false;
+            } else {
+                submitBtn.classList.remove('active');
+                submitBtn.disabled = true;
+            }
+        }
+
+        nameInput.addEventListener('input', checkChanges);
+
+        // ── Tap trigger to open ─────────────────────────────
+
+        relTrigger.addEventListener('click', openSheet);
+
+        // ── Tap overlay to close ────────────────────────────
+
+        overlay.addEventListener('click', () => {
+            if (isDragging) return;
+            closeSheet();
+        });
+
+        // ── Pull-down to dismiss ────────────────────────────
+
+        sheet.addEventListener('touchstart', (e) => {
+            if (!isSheetOpen) return;
+            const sheetOptions = document.querySelector('.sheet-options');
+            if (sheetOptions && sheetOptions.scrollTop > 0) return;
+
+            isDragging = true;
+            startY = e.touches[0].clientY;
+            currentY = startY;
+            sheet.style.transition = 'none';
+        }, { passive: true });
+
+        sheet.addEventListener('touchmove', (e) => {
+            if (!isDragging) return;
+            currentY = e.touches[0].clientY;
+            const deltaY = currentY - startY;
+
+            if (deltaY > 0) {
+                e.preventDefault();
+                sheet.style.transform = `translateY(${deltaY}px)`;
+            }
+        }, { passive: false });
+
+        sheet.addEventListener('touchend', () => {
+            if (!isDragging) return;
+            isDragging = false;
+            const deltaY = currentY - startY;
+
+            if (deltaY > 100) {
+                closeSheet();
+            } else {
+                // Snap back
+                sheet.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+                sheet.style.transform = 'translateY(0)';
+                sheet.addEventListener('transitionend', function onEnd() {
+                    sheet.removeEventListener('transitionend', onEnd);
+                    sheet.style.transition = '';
+                });
+            }
+        });
+
+        // ── Select option ───────────────────────────────────
+
+        options.forEach(option => {
+            option.addEventListener('click', () => {
+                selectedRelationship = option.innerText;
+                relDisplay.innerText = selectedRelationship;
+                relDisplay.classList.add('has-value');
+                closeSheet();
+                checkChanges();
+            });
+        });
+    </script>
+</body>
+</html>

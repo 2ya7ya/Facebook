@@ -1,0 +1,776 @@
+          root.classList.add('is-reels-loading');
+        }
+        loadLatestReel.retryTimer = window.setTimeout(loadLatestReel, 2500);
+      } finally {
+        loadLatestReel.pending = null;
+      }
+    })();
+    return loadLatestReel.pending;
+  }
+
+  function installReelFeedNavigation(root) {
+    if (!root || root.dataset.reelFeedNavigationReady === 'true') return;
+    root.dataset.reelFeedNavigationReady = 'true';
+    root.__nativeReelsActive = true;
+
+    /*
+     * TikTok-style paging should be owned by the platform scroller, not by a
+     * pointermove loop.  Every Reel is a viewport-sized snap page.  The browser
+     * therefore owns finger tracking, fling velocity, compositor scrolling and
+     * the final page snap, while JavaScript only changes playback when the
+     * nearest page changes.
+     */
+    const scroller = document.createElement('div');
+    scroller.className = 'reels-native-scroller';
+    scroller.setAttribute('aria-label', 'Reels feed');
+
+    const firstCell = document.createElement('section');
+    firstCell.className = 'reels-native-cell reels-native-original-cell';
+    firstCell.dataset.nativeOriginal = 'true';
+    firstCell.setAttribute('aria-roledescription', 'reel');
+
+    const nodeSpecs = [
+      ['#reelsVideo', 'video'],
+      ['.reels-shade', 'shade'],
+      ['.reels-center-controls', 'controls'],
+      ['.reels-side-actions', 'actions'],
+      ['.reels-details', 'details'],
+      ['#reelsProgress', 'progress']
+    ];
+    nodeSpecs.forEach(function (entry) {
+      const node = root.querySelector(entry[0]);
+      if (!node) return;
+      node.dataset.reelsNativeNode = entry[1];
+      firstCell.appendChild(node);
+    });
+
+    const firstVideo = firstCell.querySelector('[data-reels-native-node="video"]');
+    if (!firstVideo) {
+      root.__nativeReelsActive = false;
+      return;
+    }
+
+    /* The prototype is captured before any feed item is painted. Cloned cells
+     * never reuse a video element for a different Reel during ordinary paging. */
+    const prototype = firstCell.cloneNode(true);
+    prototype.dataset.nativeOriginal = 'false';
+    prototype.classList.remove('reels-native-original-cell', 'is-active');
+    prototype.querySelectorAll('[id]').forEach(function (node) { node.removeAttribute('id'); });
+    prototype.querySelectorAll('video').forEach(function (video) {
+      try { video.pause(); } catch (_error) {}
+      video.removeAttribute('src');
+      video.removeAttribute('poster');
+      video.classList.remove('has-source', 'is-awaiting-frame');
+    });
+
+    root.insertBefore(scroller, root.firstChild);
+    scroller.appendChild(firstCell);
+
+    let cells = [firstCell];
+    let feedSignature = '';
+    let activeIndex = -1;
+    let scrollRaf = 0;
+    let scrollIdleTimer = 0;
+    let warmGeneration = 0;
+    let nativeMuted = Boolean(firstVideo.muted);
+    root.__reelsMuted = nativeMuted;
+
+    const roleIds = {
+      video: 'reelsVideo',
+      creatorName: 'reelsCreatorName',
+      caption: 'reelsCaptionDisplay',
+      current: 'reelsCurrentTime',
+      duration: 'reelsDuration',
+      progress: 'reelsProgress'
+    };
+
+    function formatReelTime(seconds) {
+      seconds = Math.max(0, Number.isFinite(Number(seconds)) ? Math.floor(Number(seconds)) : 0);
+      return String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0');
+    }
+
+    function cellVideo(cell) {
+      return cell && cell.querySelector('[data-reels-native-node="video"]');
+    }
+
+    function connectionPrefersLowQuality() {
+      const connection=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
+      if(!connection)return false;
+      const type=String(connection.effectiveType||'').toLowerCase();
+      return Boolean(connection.saveData)||type==='slow-2g'||type==='2g'||type==='3g';
+    }
+    function reelSource(reel, purpose) {
+      if(!reel)return '';
+      const immediate = reelImmediatePlaybackUrls.get(String(reel.id || '')) || String(reel.cachedVideo || '');
+      if (immediate) return immediate;
+      if(purpose==='warm')return String((connectionPrefersLowQuality()?reel.videoLow:reel.videoHigh)||reel.video||'');
+      return String((connectionPrefersLowQuality()?reel.videoLow:reel.videoHigh)||reel.video||'');
+    }
+    function reelPoster(reel){ return String((reel&&reel.thumbnailUrl)||''); }
+    function reelFrameGeometry(reel) {
+      const edits = Object.assign({ fit:'contain', cropX:.5, cropY:.5, cropRatio:'' }, reel && reel.editData || {});
+      const hasCrop = Boolean(edits.cropRatio && edits.cropRatio !== 'freeform');
+      const fit = hasCrop || edits.fit === 'cover' ? 'cover' : 'contain';
+      const x = Math.max(0, Math.min(1, Number(edits.cropX) || .5));
+      const y = Math.max(0, Math.min(1, Number(edits.cropY) || .5));
+      return { fit:fit, position:(x * 100) + '% ' + (y * 100) + '%' };
+    }
+    function applyReelFrameGeometry(cell, reel) {
+      if (!cell) return;
+      const geometry = reelFrameGeometry(reel);
+      cell.style.setProperty('--reel-frame-fit', geometry.fit);
+      cell.style.setProperty('--reel-frame-position', geometry.position);
+      const video = cellVideo(cell);
+      const poster = ensurePoster(cell);
+      [video, poster].forEach(function(node){
+        if (!node) return;
+        node.style.setProperty('object-fit', geometry.fit, 'important');
+        node.style.setProperty('object-position', geometry.position, 'important');
+        node.style.setProperty('transform', 'none', 'important');
+        node.style.setProperty('transition', 'none', 'important');
+        node.style.setProperty('animation', 'none', 'important');
+      });
+    }
+
+    function markStableRoles(cell) {
+      if (!cell) return;
+      const creatorName = cell.querySelector('#reelsCreatorName') || cell.querySelector('.reels-creator > span:last-child') || cell.querySelector('.reels-creator-identity > span:first-child');
+      const caption = cell.querySelector('#reelsCaptionDisplay') || cell.querySelector('.reels-caption-display');
+      const current = cell.querySelector('#reelsCurrentTime') || cell.querySelector('.reels-time span:first-child');
+      const duration = cell.querySelector('#reelsDuration') || cell.querySelector('.reels-time span:last-child');
+      const progress = cell.querySelector('#reelsProgress') || cell.querySelector('.reels-progress');
+      if (creatorName) creatorName.dataset.reelsNativeRole = 'creatorName';
+      if (caption) caption.dataset.reelsNativeRole = 'caption';
+      if (current) current.dataset.reelsNativeRole = 'current';
+      if (duration) duration.dataset.reelsNativeRole = 'duration';
+      if (progress) progress.dataset.reelsNativeRole = 'progress';
+      const video = cellVideo(cell);
+      if (video) video.dataset.reelsNativeRole = 'video';
+    }
+    markStableRoles(firstCell);
+    markStableRoles(prototype);
+
+    function syncActiveIds(cell) {
+      cells.forEach(function (candidate) {
+        candidate.querySelectorAll('[data-reels-native-role]').forEach(function (node) {
+          const id = roleIds[node.dataset.reelsNativeRole];
+          if (id && node.id === id) node.removeAttribute('id');
+        });
+      });
+      if (!cell) return;
+      cell.querySelectorAll('[data-reels-native-role]').forEach(function (node) {
+        const id = roleIds[node.dataset.reelsNativeRole];
+        if (id) node.id = id;
+      });
+    }
+
+    function ensurePoster(cell) {
+      let poster = cell.querySelector('.reels-poster-frame');
+      if (!poster) {
+        poster = document.createElement('img');
+        poster.className = 'reels-poster-frame';
+        poster.alt = '';
+        poster.decoding = 'async';
+        const video = cellVideo(cell);
+        cell.insertBefore(poster, video || cell.firstChild);
+      }
+      return poster;
+    }
+
+    function primeCellPoster(cell) {
+      if (!cell) return;
+      const poster = ensurePoster(cell);
+      const source = String(poster.dataset.posterSrc || '');
+      if (!source) return;
+      poster.decoding = 'async';
+      poster.loading = 'eager';
+      try { poster.fetchPriority = cell.classList.contains('is-active') ? 'high' : 'auto'; } catch (_error) {}
+      if (poster.getAttribute('src') !== source) poster.src = source;
+      poster.classList.add('is-startup-placeholder');
+      poster.hidden = false;
+    }
+
+    function ensurePublishedOverlay(cell) {
+      let overlay = cell.querySelector('.reels-published-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'reels-published-overlay';
+        cell.appendChild(overlay);
+      }
+      return overlay;
+    }
+
+    function syncPlayButton(cell) {
+      const video = cellVideo(cell);
+      const play = cell && cell.querySelector('[data-reel-action="play"]');
+      if (!video || !play) return;
+      play.setAttribute('aria-label', video.paused ? 'Play' : 'Pause');
+      play.classList.toggle('is-playing', !video.paused);
+      if (video.paused && window.__reelSuppliedIcons && window.__reelSuppliedIcons.play) {
+        play.innerHTML = '<img class="reels-control-image" alt="" src="' + window.__reelSuppliedIcons.play + '">';
+      } else {
+        play.innerHTML = '<svg class="reels-pause-icon" viewBox="0 0 24 24"><path d="M8 5h2.6v14H8zM13.4 5H16v14h-2.6z"/></svg>';
+      }
+    }
+
+    function syncMuteButton(cell) {
+      const button = cell && cell.querySelector('[data-reel-action="mute"]');
+      if (!button) return;
+      button.classList.toggle('is-active', nativeMuted);
+      const image = button.querySelector('img');
+      if (image && window.__reelSuppliedIcons) image.src = nativeMuted ? window.__reelSuppliedIcons.mute : window.__reelSuppliedIcons.sound;
+    }
+
+    function syncCellDuration(cell) {
+      const video = cellVideo(cell);
+      if (!video) return;
+      const durationNode = cell.querySelector('[data-reels-native-role="duration"]');
+      const progress = cell.querySelector('[data-reels-native-role="progress"]');
+      const expected = Number(video.dataset.expectedDuration);
+      const nativeDuration = Number(video.duration);
+      const duration = Number.isFinite(expected) && expected > 0 ? expected : (Number.isFinite(nativeDuration) && nativeDuration > 0 ? nativeDuration : 0);
+      if (duration > 0) {
+        if (durationNode) durationNode.textContent = formatReelTime(duration);
+        if (progress) progress.max = String(duration);
+      }
+    }
+
+    function revealLiveFrame(cell, generation) {
+      const video = cellVideo(cell);
+      if (!video || String(video.dataset.nativeGeneration || '') !== String(generation)) return;
+      const poster = ensurePoster(cell);
+      const finish = function () {
+        if (String(video.dataset.nativeGeneration || '') !== String(generation)) return;
+        video.classList.remove('is-awaiting-frame');
+        poster.hidden = true;
+        poster.classList.remove('is-startup-placeholder');
+        cell.dataset.frameReady = 'true';
+      };
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        video.requestVideoFrameCallback(function () { requestAnimationFrame(finish); });
+      } else {
+        requestAnimationFrame(function () { requestAnimationFrame(finish); });
+      }
+    }
+
+    function wireCell(cell) {
+      if (!cell || cell.dataset.nativeWired === 'true') return;
+      cell.dataset.nativeWired = 'true';
+      markStableRoles(cell);
+      const video = cellVideo(cell);
+      if (!video) return;
+      video.playsInline = true;
+      video.loop = true;
+      video.preload = 'none';
+      video.addEventListener('loadedmetadata', function () { syncCellDuration(cell); });
+      video.addEventListener('loadeddata', function () {
+        if (cell.__reel) repairReelPosterFromVideo(cell.__reel, video).catch(function(){});
+        /* A nearby Reel is prepared with its exact final source URL. Once its
+           first real frame is decoded, keep that frame in the cell so a swipe
+           reveals video pixels immediately instead of a poster/black surface. */
+        if (video.dataset.neighborWarm === 'decode' && video.readyState >= 2 && !cell.classList.contains('is-active')) {
+          cell.dataset.frameReady = 'true';
+          video.classList.remove('is-awaiting-frame');
+          const preparedPoster = ensurePoster(cell);
+          preparedPoster.hidden = true;
+          preparedPoster.classList.remove('is-startup-placeholder');
+        }
+      });
+      video.addEventListener('durationchange', function () { syncCellDuration(cell); });
+      video.addEventListener('timeupdate', function () {
+        const current = cell.querySelector('[data-reels-native-role="current"]');
+        const progress = cell.querySelector('[data-reels-native-role="progress"]');
+        if (current) current.textContent = formatReelTime(video.currentTime);
+        if (progress && !progress.matches(':active')) {
+          progress.value = String(video.currentTime || 0);
+          const max = Number(progress.max) || Number(video.duration) || 0;
+          const pct = max > 0 ? Math.max(0, Math.min(100, (Number(video.currentTime) / max) * 100)) : 0;
+          progress.style.setProperty('--reel-progress-fill', pct + '%');
+        }
+      });
+      video.addEventListener('play', function () { syncPlayButton(cell); });
+      video.addEventListener('pause', function () { syncPlayButton(cell); });
+      video.addEventListener('playing', function () {
+        revealLiveFrame(cell, video.dataset.nativeGeneration || '0');
+      });
+      video.addEventListener('waiting', function () {
+        const poster = ensurePoster(cell);
+        if (poster.getAttribute('src')) poster.hidden = false;
+      });
+      video.addEventListener('stalled', function () {
+        const poster = ensurePoster(cell);
+        if (poster.getAttribute('src')) poster.hidden = false;
+      });
+    }
+
+    function paintCell(cell, reel, index) {
+      if (!cell || !reel) return;
+      cell.__reel = reel;
+      cell.dataset.reelIndex = String(index);
+      cell.dataset.reelId = String(reel.id || index);
+      cell.setAttribute('aria-label', (reel.author || 'Facebook user') + ' reel');
+      wireCell(cell);
+      const video = cellVideo(cell);
+      const poster = ensurePoster(cell);
+      const edits = Object.assign({ brightness: 1, contrast: 1, saturation: 1, volume: 1, effect: 'none', text: '', sticker: '', captions: false, captionText: '', overlay: false, fit: 'contain' }, reel.editData || {});
+      const baked = Boolean(edits.rendered);
+      video.dataset.reelId = String(reel.id || index);
+      video.dataset.targetSource = reelSource(reel);
+      video.dataset.expectedDuration = String(Number(edits.renderedDuration) > 0 ? Number(edits.renderedDuration) : 0);
+      video.style.filter = baked ? '' : 'brightness(' + edits.brightness + ') contrast(' + edits.contrast + ') saturate(' + edits.saturation + ') ' + (reelEffectFilters[edits.effect] || '');
+      /* Geometry is committed before poster/src so the first painted pixel and
+         the live video use the exact same crop. */
+      applyReelFrameGeometry(cell, reel);
+      video.classList.add('has-source');
+      /* Keep only the lightweight thumbnail URL as a startup placeholder.
+         The live video still owns the final fit/crop and replaces this poster
+         only after a decoded frame has actually been painted. */
+      poster.dataset.posterSrc = reelPoster(reel);
+      poster.removeAttribute('src');
+      poster.classList.remove('is-startup-placeholder');
+      poster.hidden = true;
+      video.removeAttribute('poster');
+
+      const overlay = ensurePublishedOverlay(cell);
+      overlay.classList.toggle('has-vignette', !baked && Boolean(edits.overlay));
+      overlay.replaceChildren();
+      if (!baked && edits.text) {
+        const text = document.createElement('span');
+        text.className = 'reel-overlay-text';
+        text.textContent = edits.text;
+        overlay.appendChild(text);
+      }
+      if (!baked && edits.sticker) {
+        const sticker = document.createElement('span');
+        sticker.className = 'reel-overlay-sticker';
+        sticker.textContent = edits.sticker;
+        overlay.appendChild(sticker);
+      }
+      if (!baked && edits.captions) {
+        const generatedCaption = document.createElement('span');
+        generatedCaption.className = 'reel-overlay-captions';
+        generatedCaption.textContent = String(edits.captionText || '').trim() || reel.caption || 'Captions enabled';
+        overlay.appendChild(generatedCaption);
+      }
+
+      const creatorName = cell.querySelector('[data-reels-native-role="creatorName"]');
+      if (creatorName) {
+        creatorName.textContent = reel.author || 'Facebook user';
+        creatorName.setAttribute('role', 'link');
+        creatorName.tabIndex = 0;
+        creatorName.onclick = function (event) { event.stopPropagation(); openUserProfile(reel.userId); };
+      }
+      const creator = cell.querySelector('.reels-creator');
+      let identity = cell.querySelector('.reels-creator-identity');
+      if (!identity && creator && creatorName) {
+        identity = document.createElement('span');
+        identity.className = 'reels-creator-identity';
+        creator.insertBefore(identity, creatorName);
+        identity.appendChild(creatorName);
+      }
+      let meta = cell.querySelector('.reels-post-meta');
+      if (!meta && identity) {
+        meta = document.createElement('span');
+        meta.className = 'reels-post-meta';
+        identity.appendChild(meta);
+      }
+      if (meta) setPostDateNode(meta, reel.createdAt, reel.visibility || 'public');
+
+      const avatar = cell.querySelector('.reels-avatar');
+      if (avatar) {
+        const image = document.createElement('img');
+        image.src = reel.profilePhoto || fallbackAvatar;
+        image.alt = '';
+        avatar.replaceChildren(image);
+        avatar.setAttribute('role', 'link');
+        avatar.tabIndex = 0;
+        avatar.onclick = function (event) { event.stopPropagation(); openUserProfile(reel.userId); };
+      }
+      const caption = cell.querySelector('[data-reels-native-role="caption"]');
+      if (caption) {
+        caption.textContent = reel.caption || '';
+        caption.hidden = !reel.caption;
+      }
+      const current = cell.querySelector('[data-reels-native-role="current"]');
+      const samePlayingReel = video && String(video.dataset.loadedSource || '') === String(video.dataset.targetSource || '') &&
+        String(video.dataset.reelId || '') === String(reel.id || index);
+      const liveTime = samePlayingReel ? Number(video.currentTime || 0) : 0;
+      if (current) current.textContent = formatReelTime(liveTime);
+      const progress = cell.querySelector('[data-reels-native-role="progress"]');
+      if (progress) {
+        progress.value = String(liveTime);
+        const durationForFill = Number(progress.max || video.duration || 0);
+        const fill = durationForFill > 0 ? Math.max(0, Math.min(100, liveTime / durationForFill * 100)) : 0;
+        progress.style.setProperty('--reel-progress-fill', fill + '%');
+      }
+      syncCellDuration(cell);
+
+      const like = cell.querySelector('[data-reel-action="like"]');
+      if (like) {
+        like.classList.toggle('is-active', Boolean(reel.likedByMe));
+        const image = like.querySelector('img');
+        if (image && window.__reelReactionIcons) image.src = reel.likedByMe ? window.__reelReactionIcons.liked : window.__reelReactionIcons.outline;
+        const count = like.querySelector('.reels-action-count');
+        if (count) count.textContent = String(Number(reel.likeCount || 0));
+      }
+      const save = cell.querySelector('[data-reel-action="save"]');
+      if (save) {
+        save.classList.toggle('is-active', Boolean(reel.savedByMe));
+        const image = save.querySelector('img');
+        if (image && window.__reelSaveIcons) image.src = reel.savedByMe ? window.__reelSaveIcons.enabled : window.__reelSaveIcons.disabled;
+        const count = save.querySelector('.reels-action-count');
+        if (count) count.textContent = String(Number(reel.saveCount || 0));
+      }
+      const commentCount = cell.querySelector('[data-reel-action="comments"] .reels-action-count');
+      if (commentCount) commentCount.textContent = String(Number(reel.commentCount || (Array.isArray(reel.comments) ? reel.comments.length : 0)));
+      const shareCount = cell.querySelector('[data-reel-action="share"] .reels-action-count');
+      if (shareCount) shareCount.textContent = String(Number(reel.shareCount || 0));
+      syncMuteButton(cell);
+      syncPlayButton(cell);
+    }
+
+    function clearVideoSource(cell) {
+      const video = cellVideo(cell);
+      if (!video || !video.getAttribute('src')) return;
+      try { video.pause(); } catch (_error) {}
+      video.removeAttribute('src');
+      video.removeAttribute('poster');
+      try { video.load(); } catch (_error) {}
+      video.dataset.loadedSource = '';
+      video.dataset.nativeGeneration = String((Number(video.dataset.nativeGeneration) || 0) + 1);
+      cell.dataset.frameReady = 'false';
+      video.dataset.neighborWarm = '';
+      const poster = ensurePoster(cell);
+      /* Posters are tiny immutable JPEGs. Keep an already-loaded poster in the
+         DOM when releasing a far video so reverse scrolling never waits for the
+         thumbnail network/decode path again. */
+      if (!poster.getAttribute('src') && poster.dataset.posterSrc) poster.src = poster.dataset.posterSrc;
+      poster.hidden = !poster.getAttribute('src');
+    }
+
+    function loadVideoSource(cell, preloadMode, sourceOverride) {
+      if (!cell || !cell.__reel) return null;
+      const video = cellVideo(cell);
+      if (!video) return null;
+      const source = String(sourceOverride || reelSource(cell.__reel));
+      if (!source) return video;
+      video.preload = preloadMode || 'auto';
+      if (video.dataset.loadedSource !== source || video.getAttribute('src') !== source) {
+        try { video.pause(); } catch (_error) {}
+        const generation = String((Number(video.dataset.nativeGeneration) || 0) + 1);
+        video.dataset.nativeGeneration = generation;
+        video.dataset.loadedSource = source;
+        cell.dataset.frameReady = 'false';
+        if (!video.dataset.neighborWarm) video.dataset.neighborWarm = '';
+        video.classList.add('is-awaiting-frame');
+        const poster = ensurePoster(cell);
+        primeCellPoster(cell);
+        video.removeAttribute('poster');
+        video.src = source;
+        try { video.load(); } catch (_error) {}
+      }
+      return video;
+    }
+
+    function preloadNeighbor(cell, mode) {
+      if (!cell || !cell.__reel || cell.classList.contains('is-active')) return;
+      const source = reelSource(cell.__reel, 'warm');
+      if (!source) return;
+      const decode = mode === 'decode';
+      const video = cellVideo(cell);
+      if (!video) return;
+      video.dataset.neighborWarm = decode ? 'decode' : 'metadata';
+      primeCellPoster(cell);
+      /* IMPORTANT: preload the exact URL that will later play. Media-fragment
+         URLs such as #t=0,3 create a distinct currentSrc in Chromium, which can
+         make activation reload the media and discard the prepared buffer. */
+      const loaded = loadVideoSource(cell, decode ? 'auto' : 'metadata', source);
+      if (!loaded) return;
+      loaded.muted = true;
+      loaded.playsInline = true;
+      if (decode && loaded.readyState >= 2) {
+        cell.dataset.frameReady = 'true';
+        loaded.classList.remove('is-awaiting-frame');
+        const poster = ensurePoster(cell);
+        poster.hidden = true;
+        poster.classList.remove('is-startup-placeholder');
+      }
+    }
+
+    function warmAround(index) {
+      const generation = ++warmGeneration;
+      if (document.body.dataset.page !== 'reels') return;
+      /* Keep only three decoder-ready surfaces: current + immediate next/prev.
+         +/-2 gets metadata/poster only. This mirrors proximity-ranked preload
+         without decoding the entire feed or wasting mobile bandwidth. */
+      const next = cells[index + 1], prev = cells[index - 1];
+      if (next) preloadNeighbor(next, 'decode');
+      if (prev) preloadNeighbor(prev, 'decode');
+      const work = function () {
+        if (generation !== warmGeneration || document.body.dataset.page !== 'reels') return;
+        [cells[index + 2], cells[index - 2]].forEach(function (cell) { if (cell) preloadNeighbor(cell, 'metadata'); });
+      };
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(work, { timeout: 180 });
+      else setTimeout(work, 0);
+    }
+
+    function releaseFarVideos(index) {
+      cells.forEach(function (cell, cellIndex) {
+        if (Math.abs(cellIndex - index) <= 2) return;
+        clearVideoSource(cell);
+      });
+    }
+
+    function updateGlobalReelUI(reel) {
+      if (!reel) return;
+      const comments = Array.isArray(reel.comments) ? reel.comments : [];
+      try { renderReelComments(root, comments); } catch (_error) {}
+      const owner = Boolean(profile && String(reel.userId) === String(profile.id));
+      root.querySelectorAll('[data-reel-option="edit"],[data-reel-option="delete"]').forEach(function (option) { option.hidden = !owner; });
+      if (!owner) root.querySelector('.reels-options')?.classList.remove('open');
+      const form = root.querySelector('.reels-comment-form');
+      if (form) form.querySelectorAll('input,button').forEach(function (control) { control.disabled = reel.allowComments === false; });
+    }
+
+    function playActiveVideo(cell, reset) {
+      const video = loadVideoSource(cell, 'auto');
+      if (!video) return;
+      video.dataset.neighborWarm = '';
+      video.playbackRate = 1;
+      video.defaultPlaybackRate = 1;
+      const wantedMuted = Boolean(nativeMuted);
+      video.muted = wantedMuted;
+      syncMuteButton(cell);
+      if (reset && Number(video.currentTime) > 0.25) {
+        try { video.currentTime = 0; } catch (_error) {}
+      }
+      /* loadLatestReel() also runs during app startup so cached Reels are ready.
+       * Preparing the feed must never start playback while Home/Profile/etc. is
+       * the visible page. */
+      if (document.body.dataset.page !== 'reels' || document.body.classList.contains('reel-create-open') ||
+          (pendingReelOpen && !reelMatchesPendingOpen(currentReel))) {
+        try { video.pause(); } catch (_error) {}
+        return;
+      }
+
+      /* A freshly uploaded source can be attached only milliseconds before this
+         call. Also, after a long upload the original user activation may have
+         expired, so an unmuted autoplay can be rejected by Chromium. Production
+         feeds retry when the first frame becomes playable and fall back to muted
+         autoplay rather than leaving a dead "tap play again" surface. */
+      const token = String((Number(video.dataset.autoplayToken) || 0) + 1);
+      video.dataset.autoplayToken = token;
+      const reelId = String(cell && cell.dataset.reelId || '');
+      const stillCurrent = function () {
+        return String(video.dataset.autoplayToken || '') === token &&
+          cell.classList.contains('is-active') &&
+          String(cell.dataset.reelId || '') === reelId &&
+          document.body.dataset.page === 'reels' &&
+          !document.body.classList.contains('reel-create-open');
+      };
+      const waitUntilPlayable = function (timeout) {
+        if (video.readyState >= 2) return Promise.resolve();
+        return new Promise(function (resolve) {
+          let done = false;
+          const finish = function () {
+            if (done) return;
+            done = true;
+            video.removeEventListener('loadeddata', finish);
+            video.removeEventListener('canplay', finish);
+            clearTimeout(timer);
+            resolve();
+          };
+          video.addEventListener('loadeddata', finish, { once:true });
+          video.addEventListener('canplay', finish, { once:true });
+          const timer = setTimeout(finish, timeout);
+        });
+      };
+      (async function startActiveReel() {
+        let forcedMuted = false;
+        const waits = [0, 70, 160, 350, 700];
+        for (let attemptIndex = 0; attemptIndex < waits.length; attemptIndex += 1) {
+          if (!stillCurrent()) return;
+          if (waits[attemptIndex]) await new Promise(function(resolve){ setTimeout(resolve, waits[attemptIndex]); });
+          if (!stillCurrent()) return;
+          await waitUntilPlayable(attemptIndex < 2 ? 350 : 650);
+          if (!stillCurrent()) return;
+          try {
+            video.muted = forcedMuted ? true : wantedMuted;
+            await video.play();
+            if (!stillCurrent()) return;
+            video.dataset.autoplayPending = '';
+            /* If autoplay only succeeded because we muted it, try to restore the
+               user's previous sound state. If Chromium pauses it when unmuted,
+               fall back to muted playback and make the global state truthful. */
+            if (forcedMuted && !wantedMuted) {
+              video.muted = false;
+              await new Promise(function(resolve){ setTimeout(resolve, 90); });
+              if (!stillCurrent()) return;
+              if (video.paused) {
+                video.muted = true;
+                nativeMuted = true;
+                root.__reelsMuted = true;
+                syncMuteButton(cell);
+                try { await video.play(); } catch (_error) {}
+              }
+            }
+            return;
+          } catch (error) {
+            if (!stillCurrent()) return;
+            const name = String(error && error.name || '');
+            if (!wantedMuted && !forcedMuted && (name === 'NotAllowedError' || attemptIndex >= 1)) {
+              forcedMuted = true;
+              continue;
+            }
+            video.dataset.autoplayPending = '1';
+          }
+        }
+      })();
+    }
+
+    function activateIndex(index, options) {
+      if (!reelFeed.length || !cells.length) return;
+      index = Math.max(0, Math.min(reelFeed.length - 1, Number(index) || 0));
+      const changed = index !== activeIndex;
+      const previous = activeIndex;
+      activeIndex = index;
+      currentReelIndex = index;
+      currentReel = reelFeed[index] || null;
+      cells.forEach(function (cell, cellIndex) {
+        const isActive = cellIndex === index;
+        cell.classList.toggle('is-active', isActive);
+        cell.setAttribute('aria-hidden', isActive ? 'false' : 'true');
+        const video = cellVideo(cell);
+        if (!isActive && video) {
+          try { video.pause(); } catch (_error) {}
+          video.muted = true;
+          /* The just-posted Reel used the local Blob only for its first view.
+             Once it leaves the viewport, release that memory. Returning to the
+             Reel will use the normal HTTP-range server URL like every other Reel. */
+          if (cellIndex === previous && cell.__reel) {
+            const immediate = reelImmediatePlaybackUrls.get(String(cell.__reel.id || ''));
+            if (immediate) {
+              if (String(video.dataset.loadedSource || '') === immediate) clearVideoSource(cell);
+              releaseImmediateReelPlaybackUrl(cell.__reel.id);
+              if (String(cell.__reel.cachedVideo || '') === immediate) delete cell.__reel.cachedVideo;
+            }
+          }
+        }
+      });
+      const activeCell = cells[index];
+      syncActiveIds(activeCell);
+      updateGlobalReelUI(currentReel);
+      playActiveVideo(activeCell, changed && previous >= 0);
+      if (currentReel && document.body.dataset.page === 'reels') scheduleReelView(currentReel, cellVideo(activeCell));
+      if (!(options && options.deferWarm)) warmAround(index);
+      if (!(options && options.deferRelease)) releaseFarVideos(index);
+      loadMoreReelsIfNeeded(index);
+    }
+
+    function buildSignature() {
+      return reelFeed.map(function (reel) { return String(reel && reel.id || '') + '@' + String(reel && reel.video || ''); }).join('|');
+    }
+
+    function rebuildNativeFeed() {
+      if (!root.__nativeReelsActive) return;
+      const signature = buildSignature();
+      if (!reelFeed.length) {
+        cells.forEach(function (cell) { clearVideoSource(cell); });
+        feedSignature = '';
+        activeIndex = -1;
+        return;
+      }
+      root.__nativeReelsPainting = true;
+      try {
+        /* Pagination must never tear down the currently playing cell. If the
+           new feed is simply the old prefix plus more Reels, append only the
+           new native cells and keep every prepared/current video element alive. */
+        const appendOnly = cells.length > 0 && cells.length < reelFeed.length && cells.every(function (cell, index) {
+          return cell && cell.__reel && reelFeed[index] && String(cell.__reel.id || '') === String(reelFeed[index].id || '');
+        });
+        if (appendOnly) {
+          const start = cells.length;
+          while (cells.length < reelFeed.length) {
+            const clone = prototype.cloneNode(true);
+            clone.dataset.nativeOriginal = 'false';
+            clone.querySelectorAll('[id]').forEach(function (node) { node.removeAttribute('id'); });
+            clone.querySelectorAll('video').forEach(function (video) {
+              video.removeAttribute('src');
+              video.removeAttribute('poster');
+              video.dataset.loadedSource = '';
+              video.dataset.neighborWarm = '';
+            });
+            markStableRoles(clone);
+            wireCell(clone);
+            scroller.appendChild(clone);
+            cells.push(clone);
+          }
+          for (let index = start; index < cells.length; index += 1) paintCell(cells[index], reelFeed[index], index);
+          feedSignature = signature;
+        } else if (signature !== feedSignature || cells.length !== reelFeed.length) {
+          const firstVideo = cellVideo(firstCell);
+          const preserveFirst = activeIndex === 0 && firstCell && firstCell.__reel && reelFeed[0] &&
+            String(firstCell.__reel.id || '') === String(reelFeed[0].id || '');
+          const preservedTime = preserveFirst && firstVideo ? Number(firstVideo.currentTime || 0) : 0;
+          const preservedPaused = preserveFirst && firstVideo ? Boolean(firstVideo.paused) : true;
+          cells.forEach(function (cell, cellIndex) {
+            if (preserveFirst && cellIndex === 0) return;
+            const video = cellVideo(cell);
+            if (video) { try { video.pause(); } catch (_error) {} }
+          });
+          /* Never detach the active first video when only the surrounding feed
+           * changed. Android Chromium can destroy/recreate the video compositor
+           * surface on detach, producing the visible shrink/pause/restart. */
+          if (preserveFirst && firstCell.parentNode === scroller) {
+            Array.from(scroller.children).forEach(function (child) {
+              if (child !== firstCell) child.remove();
+            });
+          } else {
+            scroller.replaceChildren(firstCell);
+          }
+          cells = [firstCell];
+          while (cells.length < reelFeed.length) {
+            const clone = prototype.cloneNode(true);
+            clone.dataset.nativeOriginal = 'false';
+            clone.querySelectorAll('[id]').forEach(function (node) { node.removeAttribute('id'); });
+            clone.querySelectorAll('video').forEach(function (video) {
+              video.removeAttribute('src');
+              video.removeAttribute('poster');
+              video.dataset.loadedSource = '';
+              video.dataset.neighborWarm = '';
+            });
+            markStableRoles(clone);
+            wireCell(clone);
+            scroller.appendChild(clone);
+            cells.push(clone);
+          }
+          feedSignature = signature;
+          if (!preserveFirst) activeIndex = -1;
+          else {
+            activeIndex = 0;
+            currentReelIndex = 0;
+            currentReel = reelFeed[0] || currentReel;
+            if (firstVideo) {
+              if (preservedTime > 0 && Math.abs(Number(firstVideo.currentTime || 0) - preservedTime) > .15) {
+                try { firstVideo.currentTime = preservedTime; } catch (_error) {}
+              }
+              if (!preservedPaused && document.body.dataset.page === 'reels') {
+                const resumed = firstVideo.play();
+                if (resumed && typeof resumed.catch === 'function') resumed.catch(function () {});
+              }
+            }
+          }
+        }
+        if (!appendOnly) cells.forEach(function (cell, index) { paintCell(cell, reelFeed[index], index); });
+      } finally {
+        root.__nativeReelsPainting = false;
+      }
+      const wanted = Math.max(0, Math.min(reelFeed.length - 1, currentReelIndex || 0));
+      activateIndex(wanted, { deferRelease: true });
+      requestAnimationFrame(function () {
+        const cell = cells[wanted];
+        if (cell) scroller.scrollTop = cell.offsetTop;
+        releaseFarVideos(wanted);
+      });
+    }
+

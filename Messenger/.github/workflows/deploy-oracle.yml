@@ -1,0 +1,33 @@
+name: Deploy backend to Oracle
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Oracle VPS
+        env:
+          SSH_KEY_B64: ${{ secrets.ORACLE_SSH_KEY_B64 }}
+          HOST: ${{ secrets.ORACLE_HOST }}
+          USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "$SSH_KEY_B64" | base64 -d > ~/.ssh/oracle_deploy
+          chmod 600 ~/.ssh/oracle_deploy
+
+          ssh -o StrictHostKeyChecking=accept-new \
+              -i ~/.ssh/oracle_deploy \
+              "$USER@$HOST" <<'REMOTE'
+            set -e
+            cd /home/opc/facebook
+            git fetch origin main
+            git reset --hard origin/main
+            npm install
+            pm2 restart facebook-backend
+            pm2 save
+          REMOTE
