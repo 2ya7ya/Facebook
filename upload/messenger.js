@@ -143,7 +143,7 @@ function wire(p){p.querySelector('[data-msg-close]').onclick=closeMessenger;p.qu
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{ensure();connect();cacheGet('inbox').then(c=>{if(c?.value){state.inbox=c.value;updateBadge();}});});else{ensure();connect();cacheGet('inbox').then(c=>{if(c?.value){state.inbox=c.value;updateBadge();}});}
 })();
 
-/* Messenger V172: selected view-icon alignment and right-anchored pending media. */
+/* Messenger V173: equalized native view-mode icon artwork and shared alignment. */
 (function(){
 'use strict';
 function root(){return document.getElementById('facebookMessengerPage');}
@@ -217,13 +217,14 @@ function install(){
 #facebookMessengerPage .v170-pending-send{display:block;flex:0 0 14px;width:14px;height:14px;align-self:flex-end;margin:0 1px 4px 2px;background:#8a8d91;mask:url('/icons/messenger-pending-send.png?v=170') center/contain no-repeat;-webkit-mask:url('/icons/messenger-pending-send.png?v=170') center/contain no-repeat}
 #facebookMessengerPage .v86-upload:not(.is-failed) .v143-upload-state{display:none!important}
 #facebookMessengerPage .v86-upload .v86-progress{display:none!important}
-#facebookMessengerPage .v166-view-menu button>.v168-native-icon{width:34px!important;height:34px!important;padding:6px!important}
+#facebookMessengerPage .v166-view-menu button>.v168-native-icon{width:34px!important;height:34px!important;padding:6px!important;align-self:center!important;object-position:center!important;transform:none!important}
+#facebookMessengerPage .v166-view-menu button>.v168-native-icon-view-unlimited{padding:3px!important;transform:translateY(4px)!important}
 #facebookMessengerPage .v166-view-menu button{grid-template-columns:34px minmax(0,1fr) 28px!important;height:56px!important}
 #facebookMessengerPage .v166-view-menu .v167-choice{width:24px!important;height:24px!important}
 #facebookMessengerPage .v166-view-menu button.selected .v167-choice{background-size:21px 21px!important}
 #facebookMessengerPage .v166-view-button{width:190px!important;padding:0 14px!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important}
-#facebookMessengerPage .v166-view-button .v168-native-icon{flex:0 0 25px!important;width:25px!important;height:25px!important;padding:0!important;align-self:center!important;object-position:center!important;transform:none!important;filter:none!important;mix-blend-mode:normal!important}
-#facebookMessengerPage .v166-view-button .v168-native-icon-view-unlimited{flex-basis:24px!important;width:24px!important;height:24px!important;transform:translateY(2px)!important}
+#facebookMessengerPage .v166-view-button .v168-native-icon{flex:0 0 22px!important;width:22px!important;height:22px!important;padding:0!important;align-self:center!important;object-position:center!important;transform:none!important;filter:none!important;mix-blend-mode:normal!important}
+#facebookMessengerPage .v166-view-button .v168-native-icon-view-unlimited{flex-basis:28px!important;width:28px!important;height:28px!important;transform:translateY(4px)!important}
 #facebookMessengerPage .v166-view-button>span{display:block!important;flex:1 1 auto!important;min-width:max-content!important;width:auto!important;white-space:nowrap!important;text-align:left!important;line-height:20px!important;align-self:center!important}
 #facebookMessengerPage .v86-upload{width:100%!important;justify-content:flex-end!important;align-items:flex-end!important}
 #facebookMessengerPage .v172-pending-cluster{display:flex!important;align-items:flex-end!important;justify-content:flex-end!important;gap:3px!important;width:fit-content!important;max-width:calc(100% - 2px)!important;margin-left:auto!important}
@@ -695,7 +696,7 @@ function active(){return window.__facebookMessengerActiveConversation?.()||{};}
 function escapeHtml(value){return String(value||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function svg(path,view='0 0 24 24'){return `<svg viewBox="${view}" aria-hidden="true"><path d="${path}"/></svg>`;}
 function asset(name,alt=''){
- if(['gallery','sticker','draw','view-once','view-twice','view-unlimited'].includes(name))return `<img class="v168-native-icon v168-native-icon-${name}" src="${ASSET}${name}.png?v=172" alt="${escapeHtml(alt)}" draggable="false">`;
+ if(['gallery','sticker','draw','view-once','view-twice','view-unlimited'].includes(name))return `<img class="v168-native-icon v168-native-icon-${name}" src="${ASSET}${name}.png?v=173" alt="${escapeHtml(alt)}" draggable="false">`;
  const icons={
   gallery:'<path d="M5 5h20v20H5zM5 21l6-6 4 4 4-4 6 6"/><circle cx="20" cy="11" r="2" fill="currentColor" stroke="none"/>',
   sticker:'<path d="M5 4h18v14l-6 6H5zM17 24v-6h6"/>',
