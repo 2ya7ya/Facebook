@@ -6557,6 +6557,12 @@ async function messengerConversationBlocked(conversationId) {
   return result.rowCount>0;
 }
 function messengerAttachmentUrl(id) { return `/api/messaging/attachments/${encodeURIComponent(String(id))}`; }
+function messengerAttachmentViewMode(name) {
+  const value=String(name||'').toLowerCase();
+  if(value.includes('__vm1__')||value.includes('view-once'))return 1;
+  if(value.includes('__vm2__')||value.includes('view-twice'))return 2;
+  return 0;
+}
 async function messengerSharedContent(contentType,contentId,viewerId) {
   const type=String(contentType||'').toLowerCase(),id=String(contentId||'');
   if(!validNumericId(id)||!['reel','post'].includes(type))return null;
@@ -6614,7 +6620,7 @@ async function loadMessengerMessage(messageId, viewerId) {
     type:row.message_type||'text',body:row.deleted_at?'':(row.body||''),deleted:Boolean(row.deleted_at),forwarded:Boolean(row.forwarded_from_id),editedAt:row.edited_at||null,createdAt:row.created_at,
     sender:{id:row.sender_id?String(row.sender_id):'',name:row.sender_name||'Facebook user',avatar:avatarDeliveryUrl(row.sender_id,row.sender_photo)},
     reply:row.reply_id?{id:String(row.reply_id),body:row.reply_body||'',type:row.reply_type||'text',senderName:row.reply_sender_name||'Facebook user'}:null,
-    attachments:(Array.isArray(row.attachments)?row.attachments:[]).map(a=>({id:String(a.id),name:a.name||'',mimeType:a.mimeType||a.mimetype||'application/octet-stream',size:Number(a.size)||0,url:messengerAttachmentUrl(a.id)})),
+    attachments:(Array.isArray(row.attachments)?row.attachments:[]).map(a=>({id:String(a.id),name:a.name||'',mimeType:a.mimeType||a.mimetype||'application/octet-stream',size:Number(a.size)||0,url:messengerAttachmentUrl(a.id),viewMode:messengerAttachmentViewMode(a.name)})),
     reactions:(Array.isArray(row.reactions)?row.reactions:[]).map(reaction=>({...reaction,avatar:avatarDeliveryUrl(reaction.userId||reaction.userid,''),mine:String(reaction.userId||reaction.userid)===String(viewerId)})),receipts,status,sharedContent
   };
 }
@@ -6846,7 +6852,8 @@ async function loadMessengerMessages(messageIds, viewerId) {
             a.mimetype ||
             'application/octet-stream',
           size: Number(a.size) || 0,
-          url: messengerAttachmentUrl(a.id)
+          url: messengerAttachmentUrl(a.id),
+          viewMode: messengerAttachmentViewMode(a.name)
         })),
 
       reactions:
