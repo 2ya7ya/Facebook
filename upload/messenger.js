@@ -143,6 +143,99 @@ function wire(p){p.querySelector('[data-msg-close]').onclick=closeMessenger;p.qu
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{ensure();connect();cacheGet('inbox').then(c=>{if(c?.value){state.inbox=c.value;updateBadge();}});});else{ensure();connect();cacheGet('inbox').then(c=>{if(c?.value){state.inbox=c.value;updateBadge();}});}
 })();
 
+/* Messenger V169: native recording progression and camera-editor parity corrections. */
+(function(){
+'use strict';
+function root(){return document.getElementById('facebookMessengerPage');}
+function exactFontButtons(container){
+ if(!container||container.dataset.v169Fonts)return;
+ container.dataset.v169Fonts='1';
+ const current=String(container.closest('.v166-text-editor')?.querySelector('.v168-live-text')?.dataset.font||'Arial').toLowerCase();
+ const fonts=[
+  ['Arial,Helvetica,sans-serif','Modern','modern'],
+  ['Georgia,"Times New Roman",serif','Classic','classic'],
+  ['cursive','Signature','signature'],
+  ['"Courier New",monospace','Editor','editor'],
+  ['Impact,"Arial Black",sans-serif','Poster','poster'],
+  ['"Arial Narrow","Roboto Condensed",sans-serif','Deco','deco']
+ ];
+ container.replaceChildren(...fonts.map(([family,label,kind],index)=>{
+  const button=document.createElement('button');
+  button.type='button';button.dataset.font=family;button.dataset.kind=kind;
+  button.textContent=label;button.style.fontFamily=family;
+  if((index===0&&current.includes('arial'))||current.includes(String(family).split(',')[0].replace(/["']/g,'').toLowerCase()))button.classList.add('selected');
+  return button;
+ }));
+}
+function syncEditorState(host){
+ const editor=host.querySelector('.v166-camera>.v166-editor');
+ host.querySelectorAll('.v166-camera').forEach(camera=>camera.classList.toggle('v169-editor-open',Boolean(camera.querySelector(':scope>.v166-editor'))));
+ if(editor?.classList.contains('v166-text-editor'))exactFontButtons(editor.querySelector('.v167-fonts'));
+}
+function install(){
+ const host=root();if(!host)return setTimeout(install,40);
+ if(!document.getElementById('facebookMessengerV169Style')){
+  const style=document.createElement('style');style.id='facebookMessengerV169Style';style.textContent=`
+#facebookMessengerPage .v86-recordbar{padding-left:8px!important;padding-right:3px!important}
+#facebookMessengerPage .v86-recordbar [data-delete]{margin-left:3px!important;margin-right:8px!important}
+#facebookMessengerPage .v86-recordbar .v86-wave{order:2!important;flex:0 1 min(46vw,188px)!important;width:min(46vw,188px)!important;max-width:188px!important;min-width:104px!important;margin:0 8px 0 0!important;gap:2px!important;justify-content:flex-start!important;direction:ltr!important}
+#facebookMessengerPage .v86-recordbar .v86-wave i{flex:0 0 2px!important;width:2px!important;max-width:2px!important;opacity:0!important;transition:height .055s linear,opacity .04s linear!important}
+#facebookMessengerPage .v86-recordbar .v86-wave i.v169-wave-visible{opacity:1!important}
+#facebookMessengerPage .v86-recordbar .v86-record-time{order:3!important}
+#facebookMessengerPage .v86-recordbar [data-send]{order:4!important;margin-left:auto!important;margin-right:0!important;padding:4px!important}
+#facebookMessengerPage .v86-recordbar .v165-record-send{width:34px!important;height:34px!important;stroke-width:1.9!important}
+#facebookMessengerPage .v166-camera .v168-native-icon{filter:none!important;mix-blend-mode:normal!important;opacity:1!important}
+#facebookMessengerPage .v166-camera.v169-editor-open>.v166-tools,#facebookMessengerPage .v166-camera.v169-editor-open>.v166-preview-back,#facebookMessengerPage .v166-camera.v169-editor-open>.v166-view-button,#facebookMessengerPage .v166-camera.v169-editor-open>.v166-send{visibility:hidden!important;pointer-events:none!important}
+#facebookMessengerPage .v166-editor{z-index:30!important;isolation:isolate!important;overflow:hidden!important}
+#facebookMessengerPage .v166-text-editor .v166-text-stage{pointer-events:auto!important;overflow:hidden!important}
+#facebookMessengerPage .v166-text-editor .v168-live-text{touch-action:none!important;user-select:text!important;-webkit-user-select:text!important;cursor:move!important}
+#facebookMessengerPage .v166-text-editor .v167-fonts{left:0!important;right:0!important;bottom:60px!important;height:54px!important;padding:0 10px!important;gap:8px!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;overflow-x:auto!important;scrollbar-width:none!important}
+#facebookMessengerPage .v166-text-editor .v167-fonts::-webkit-scrollbar{display:none!important}
+#facebookMessengerPage .v166-text-editor .v167-fonts button{flex:0 0 auto!important;width:auto!important;min-width:82px!important;height:42px!important;padding:0 14px!important;border:1px solid #ffffff46!important;border-radius:15px!important;background:transparent!important;color:#fff!important;font-size:14px!important;white-space:nowrap!important}
+#facebookMessengerPage .v166-text-editor .v167-fonts button.selected{border-color:#fff!important;background:#fff!important;color:#262626!important}
+#facebookMessengerPage .v166-draw-editor{background:#000!important}
+#facebookMessengerPage .v166-draw-editor:before{content:'';position:absolute;z-index:-1;inset:50px 0 118px;background:transparent}
+#facebookMessengerPage .v166-draw-editor header{z-index:5!important}
+#facebookMessengerPage .v166-draw-editor canvas{z-index:2!important;background:transparent!important}
+#facebookMessengerPage .v166-view-menu{box-sizing:border-box!important;left:14px!important;bottom:74px!important;width:292px!important;max-width:calc(100% - 28px)!important;padding:16px 18px!important;border-radius:18px!important;overflow:hidden!important}
+#facebookMessengerPage .v166-view-menu p{box-sizing:border-box!important;width:100%!important;height:auto!important;min-height:54px!important;margin:0!important;padding:0 2px 9px!important;font-size:14px!important;line-height:20px!important;white-space:normal!important}
+#facebookMessengerPage .v166-view-menu button{box-sizing:border-box!important;width:100%!important;height:62px!important;padding:0!important;display:grid!important;grid-template-columns:44px minmax(0,1fr) 32px!important;align-items:center!important;column-gap:10px!important;text-align:left!important}
+#facebookMessengerPage .v166-view-menu button>.v168-native-icon{grid-column:1!important;width:44px!important;height:44px!important;margin:0!important;filter:none!important;mix-blend-mode:normal!important}
+#facebookMessengerPage .v166-view-menu button>span{grid-column:2!important;min-width:0!important;display:block!important;font-size:18px!important;line-height:22px!important;text-align:left!important;white-space:nowrap!important}
+#facebookMessengerPage .v166-view-menu .v167-choice{grid-column:3!important;width:28px!important;height:28px!important;border:0!important;border-radius:0!important;background:transparent!important}
+#facebookMessengerPage .v166-view-menu .v167-choice b{display:none!important}
+#facebookMessengerPage .v166-view-menu button.selected .v167-choice{background:url('/icons/messenger-camera-view-unlimited.png?v=169') center/25px 25px no-repeat!important;filter:none!important}
+#facebookMessengerPage .v166-view-button .v168-native-icon{filter:none!important;mix-blend-mode:normal!important}
+`;
+  document.head.appendChild(style);
+  setTimeout(()=>{const latest=document.getElementById('facebookMessengerV169Style');if(latest)document.head.appendChild(latest);},750);
+ }
+ const observer=new MutationObserver(()=>syncEditorState(host));observer.observe(host,{childList:true,subtree:true});syncEditorState(host);
+ let gesture=null,waveFrame=0;
+ const stopWave=()=>{cancelAnimationFrame(waveFrame);waveFrame=0;};
+ host.addEventListener('pointerdown',event=>{
+  if(event.target.closest('[data-msg-mic]')){
+   gesture={id:event.pointerId,x:event.clientX,y:event.clientY,started:performance.now(),seen:false};
+   const wave=host.querySelector('.v86-wave');
+   if(wave){while(wave.children.length>34)wave.lastElementChild.remove();while(wave.children.length<34)wave.appendChild(document.createElement('i'));[...wave.children].forEach(bar=>bar.classList.remove('v169-wave-visible'));}
+   stopWave();
+   const reveal=now=>{if(!gesture)return;const bars=[...host.querySelectorAll('.v86-recordbar.show .v86-wave i')];if(!bars.length){if(gesture.seen){gesture=null;stopWave();return;}gesture.started=now;waveFrame=requestAnimationFrame(reveal);return;}gesture.seen=true;const visible=Math.min(bars.length,Math.floor((now-gesture.started)/55)+1);bars.forEach((bar,index)=>bar.classList.toggle('v169-wave-visible',index<visible));waveFrame=requestAnimationFrame(reveal);};
+   waveFrame=requestAnimationFrame(reveal);
+  }
+  const menu=host.querySelector('.v166-view-menu');
+  if(menu&&!event.target.closest('.v166-view-menu,.v166-view-button')){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();menu.remove();}
+ },true);
+ host.addEventListener('pointermove',event=>{
+  if(!gesture||event.pointerId!==gesture.id)return;
+  const dx=event.clientX-gesture.x,dy=event.clientY-gesture.y;
+  if(dx<0&&dx>-120&&dy>-58){event.stopImmediatePropagation();}
+ },true);
+ const finishWave=event=>{if(!gesture||event.pointerId!==gesture.id)return;if(event.type==='pointerup'&&event.clientY-gesture.y<-72){gesture.id=null;return;}gesture=null;stopWave();};
+ host.addEventListener('pointerup',finishWave,true);host.addEventListener('pointercancel',finishWave,true);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',install);else install();
+})();
+
 /* Messenger V86 interaction layer: native-style gestures, recording and media preview. */
 (function(){
 'use strict';
@@ -574,7 +667,7 @@ function active(){return window.__facebookMessengerActiveConversation?.()||{};}
 function escapeHtml(value){return String(value||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function svg(path,view='0 0 24 24'){return `<svg viewBox="${view}" aria-hidden="true"><path d="${path}"/></svg>`;}
 function asset(name,alt=''){
- if(['gallery','sticker','draw','view-once','view-twice','view-unlimited'].includes(name))return `<img class="v168-native-icon" src="${ASSET}${name}.png?v=168" alt="${escapeHtml(alt)}" draggable="false">`;
+ if(['gallery','sticker','draw','view-once','view-twice','view-unlimited'].includes(name))return `<img class="v168-native-icon" src="${ASSET}${name}.png?v=169" alt="${escapeHtml(alt)}" draggable="false">`;
  const icons={
   gallery:'<path d="M5 5h20v20H5zM5 21l6-6 4 4 4-4 6 6"/><circle cx="20" cy="11" r="2" fill="currentColor" stroke="none"/>',
   sticker:'<path d="M5 4h18v14l-6 6H5zM17 24v-6h6"/>',
