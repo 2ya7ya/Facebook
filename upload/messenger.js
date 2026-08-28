@@ -160,6 +160,7 @@ function install(){
  const root=document.getElementById('facebookMessengerPage');if(!root)return setTimeout(install,40);if(root.dataset.v179Installed)return;root.dataset.v179Installed='1';
  const style=document.createElement('style');style.id='facebookMessengerV179Style';style.textContent=`
 #facebookMessengerPage#facebookMessengerPage .v166-view-button{width:166px!important;padding:0 11px!important;gap:8px!important}
+#facebookMessengerPage#facebookMessengerPage .v166-view-button:has(.v168-native-icon-view-once),#facebookMessengerPage#facebookMessengerPage .v166-view-button:has(.v168-native-icon-view-twice){width:146px!important}
 #facebookMessengerPage#facebookMessengerPage .v166-view-button .v168-native-icon-view-unlimited{flex-basis:24px!important;width:24px!important;height:24px!important;transform:translateY(2px)!important}
 #facebookMessengerPage#facebookMessengerPage .v168-sticker-delete{right:-10px!important;top:-10px!important;width:28px!important;height:28px!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;color:#fff!important;font:400 27px/28px Arial!important;text-shadow:0 1px 4px #000,0 0 2px #000!important}
 #facebookMessengerPage .v179-initializing .v166-view-menu{visibility:hidden!important;pointer-events:none!important}
@@ -176,7 +177,7 @@ function install(){
 #facebookMessengerPage .v166-text-stage{background-color:#161616!important}
 `;document.head.appendChild(style);
 
- const assets=['/icons/default_profile.png','/icons/messenger-camera-gallery.png?v=173','/icons/messenger-camera-sticker.png?v=173','/icons/messenger-camera-draw.png?v=173','/icons/messenger-camera-view-once.png?v=173','/icons/messenger-camera-view-twice.png?v=173','/icons/messenger-camera-view-unlimited.png?v=173'];
+ const assets=['/icons/default_profile.png','/icons/messenger-camera-gallery.png?v=173','/icons/messenger-camera-sticker.png?v=173','/icons/messenger-camera-draw.png?v=173','/icons/messenger-camera-view-once.png?v=173','/icons/messenger-camera-view-twice.png?v=173','/icons/messenger-camera-view-unlimited.png?v=173','/icons/messenger-pending-send.png?v=170'];
  let keeper=document.getElementById('facebookMessengerV179ImageKeeper');if(!keeper){keeper=document.createElement('div');keeper.id='facebookMessengerV179ImageKeeper';keeper.hidden=true;assets.forEach(source=>{const image=new Image();image.decoding='async';image.src=source;image.decode?.().catch(()=>{});keeper.appendChild(image);});root.appendChild(keeper);}
 
  const avatarCache=window.__facebookMessengerAvatarDataCache||(window.__facebookMessengerAvatarDataCache=new Map());
