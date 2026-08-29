@@ -431,6 +431,7 @@ async function ensureDatabase() {
   `);
   await pool.query("ALTER TABLE posts ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public'");
   await pool.query("ALTER TABLE posts ADD COLUMN IF NOT EXISTS media_items JSONB NOT NULL DEFAULT '[]'::jsonb");
+  await pool.query('ALTER TABLE posts ADD COLUMN IF NOT EXISTS client_request_id TEXT');
   await pool.query("ALTER TABLE posts ADD COLUMN IF NOT EXISTS post_extras JSONB NOT NULL DEFAULT '{}'::jsonb");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS post_likes (
@@ -718,6 +719,7 @@ async function ensureDatabase() {
 
   await pool.query('CREATE INDEX IF NOT EXISTS posts_user_created_id_idx ON posts (user_id, created_at DESC, id DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS posts_created_id_idx ON posts (created_at DESC, id DESC)');
+  await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS posts_user_client_request_unique_idx ON posts (user_id, client_request_id) WHERE client_request_id IS NOT NULL');
   await pool.query('CREATE INDEX IF NOT EXISTS reels_user_created_id_idx ON reels (user_id, created_at DESC, id DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS stories_user_created_id_idx ON stories (user_id, created_at DESC, id DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS post_comments_user_created_id_idx ON post_comments (user_id, created_at DESC, id DESC)');
@@ -4450,17 +4452,25 @@ app.post('/api/posts', requireApiAuth, async (request, response) => {
   if (body.length > 5000) return response.status(400).json({ error: 'Post text is too long.' });
   if (!['public','friends','only-me'].includes(visibility)) return response.status(400).json({ error: 'Choose a valid post audience.' });
   const firstImage = media.find(item => item.type === 'image')?.data || null;
+  const compactResponse = String(request.get('x-native-compact') || '') === '1';
+  const clientRequestId = String(request.get('x-post-request-id') || '').trim().slice(0, 100) || null;
   try {
     await ensureDatabase();
     const client = await pool.connect();
     let post;
     try {
       await client.query('BEGIN');
-      const result = await client.query(
-        `INSERT INTO posts (user_id, body, image_data, media_items, post_extras, visibility)
-         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
+      let result = await client.query(
+        `INSERT INTO posts (user_id, body, image_data, media_items, post_extras, visibility, client_request_id)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
+         ON CONFLICT (user_id, client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING
          RETURNING id, body, image_data, media_items, post_extras, visibility, created_at`,
-        [request.user.id, body, firstImage, JSON.stringify(media), JSON.stringify(extras), visibility]
+        [request.user.id, body, firstImage, JSON.stringify(media), JSON.stringify(extras), visibility, clientRequestId]
+      );
+      if (!result.rowCount && clientRequestId) result = await client.query(
+        `SELECT id, body, image_data, media_items, post_extras, visibility, created_at
+           FROM posts WHERE user_id=$1 AND client_request_id=$2 LIMIT 1`,
+        [request.user.id, clientRequestId]
       );
       post = result.rows[0];
       post._linkedReels = await syncPostVideoReels(client, {
@@ -4474,17 +4484,22 @@ app.post('/api/posts', requireApiAuth, async (request, response) => {
     } finally {
       client.release();
     }
-    await createMentionNotifications(pool, request.user.id, body, post.id);
+    const responseMedia = compactResponse ? [] : normalizeStoredPostMedia(post.media_items, post.image_data || '').map((item, index) => ({
+      ...item,
+      reelId: post._linkedReels?.find(link => link.mediaIndex === index)?.id || '',
+      contentKey: `post:${post.id}:media:${index}`
+    }));
     response.status(201).json({ ok: true, post: {
-      ...post,
+      id: String(post.id),
+      userId: String(request.user.id),
+      body: post.body || '',
+      visibility: post.visibility || 'public',
+      createdAt: post.created_at,
       contentKey: `post:${post.id}`,
-      media: normalizeStoredPostMedia(post.media_items, post.image_data || '').map((item, index) => ({
-        ...item,
-        reelId: post._linkedReels?.find(link => link.mediaIndex === index)?.id || '',
-        contentKey: `post:${post.id}:media:${index}`
-      })),
-      extras: post.post_extras && typeof post.post_extras === 'object' ? post.post_extras : {}
+      media: compactResponse ? [] : responseMedia,
+      extras: compactResponse ? {} : (post.post_extras && typeof post.post_extras === 'object' ? post.post_extras : {})
     } });
+    void createMentionNotifications(pool, request.user.id, body, post.id).catch(error => console.error('Post mention notification failed:', error.message));
   } catch (error) {
     console.error('Post creation failed:', error.message);
     response.status(500).json({ error: 'Could not save the post.' });
@@ -4496,6 +4511,7 @@ app.patch('/api/posts/:postId', requireApiAuth, async (request, response) => {
   if (!validNumericId(postId)) return response.status(400).json({ error: 'Invalid post.' });
   const body = String(request.body?.body || '').trim();
   const visibility = String(request.body?.visibility || 'public').trim().toLowerCase();
+  const compactResponse = String(request.get('x-native-compact') || '') === '1';
   const mediaWasProvided = Object.prototype.hasOwnProperty.call(request.body || {}, 'media');
   const imageWasProvided = Object.prototype.hasOwnProperty.call(request.body || {}, 'image');
   const extrasWereProvided = Object.prototype.hasOwnProperty.call(request.body || {}, 'extras');
@@ -4549,15 +4565,20 @@ app.patch('/api/posts/:postId', requireApiAuth, async (request, response) => {
         pool.query('DELETE FROM post_media_comments WHERE post_id = $1', [postId])
       ]);
     }
+    const responseMedia = compactResponse ? [] : normalizeStoredPostMedia(post.media_items, post.image_data || '').map((item, index) => ({
+      ...item,
+      reelId: post._linkedReels?.find(link => link.mediaIndex === index)?.id || '',
+      contentKey: `post:${post.id}:media:${index}`
+    }));
     response.json({ ok: true, post: {
-      ...post,
+      id: String(post.id),
+      userId: String(post.user_id),
+      body: post.body || '',
+      visibility: post.visibility || 'public',
+      createdAt: post.created_at,
       contentKey: `post:${post.id}`,
-      media: normalizeStoredPostMedia(post.media_items, post.image_data || '').map((item, index) => ({
-        ...item,
-        reelId: post._linkedReels?.find(link => link.mediaIndex === index)?.id || '',
-        contentKey: `post:${post.id}:media:${index}`
-      })),
-      extras: post.post_extras && typeof post.post_extras === 'object' ? post.post_extras : {}
+      media: compactResponse ? [] : responseMedia,
+      extras: compactResponse ? {} : (post.post_extras && typeof post.post_extras === 'object' ? post.post_extras : {})
     } });
   } catch (error) {
     console.error('Post update failed:', error.message);
