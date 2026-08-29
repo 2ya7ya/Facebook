@@ -289,16 +289,6 @@ async function ensureDatabase() {
     )
   `);
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS messenger_attachment_views (
-      attachment_id BIGINT NOT NULL REFERENCES messenger_attachments(id) ON DELETE CASCADE,
-      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      opened_count SMALLINT NOT NULL DEFAULT 0,
-      first_opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (attachment_id, user_id)
-    )
-  `);
-  await pool.query(`
     CREATE TABLE IF NOT EXISTS messenger_message_receipts (
       message_id BIGINT NOT NULL REFERENCES messenger_messages(id) ON DELETE CASCADE,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -727,6 +717,7 @@ async function ensureDatabase() {
   await pool.query('CREATE INDEX IF NOT EXISTS reel_views_user_viewed_idx ON reel_views (user_id, viewed_at DESC)');
 
   await pool.query('CREATE INDEX IF NOT EXISTS posts_user_created_id_idx ON posts (user_id, created_at DESC, id DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS posts_created_id_idx ON posts (created_at DESC, id DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS reels_user_created_id_idx ON reels (user_id, created_at DESC, id DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS stories_user_created_id_idx ON stories (user_id, created_at DESC, id DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS post_comments_user_created_id_idx ON post_comments (user_id, created_at DESC, id DESC)');
@@ -4261,27 +4252,42 @@ app.put('/api/profile', requireApiAuth, async (request, response) => {
   }
 });
 
+function postFeedCursorEncode(row) {
+  return Buffer.from(JSON.stringify({ createdAt: row.created_at, id: String(row.id) })).toString('base64url');
+}
+
+function postFeedCursorDecode(value) {
+  if (!value) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
+    if (!decoded || !decoded.createdAt || !validNumericId(decoded.id)) return null;
+    const date = new Date(decoded.createdAt);
+    if (!Number.isFinite(date.getTime())) return null;
+    return { createdAt: date.toISOString(), id: String(decoded.id) };
+  } catch (_error) {
+    return null;
+  }
+}
+
 app.get('/api/posts', requireApiAuth, async (request, response) => {
   try {
     await ensureDatabase();
+    const rawLimit = String(request.query.limit || '').trim();
+    const pageLimit = rawLimit ? Math.max(1, Math.min(12, Number.parseInt(rawLimit, 10) || 4)) : 0;
+    const cursor = postFeedCursorDecode(request.query.cursor);
+    if (request.query.cursor && !cursor) return response.status(400).json({ error: 'Invalid posts cursor.' });
+    const requestedUserId = String(request.query.userId || '').trim();
+    if (requestedUserId && !validNumericId(requestedUserId)) return response.status(400).json({ error: 'Invalid profile.' });
     const result = await pool.query(`
-      WITH like_counts AS (
-        SELECT post_id, COUNT(*)::int AS like_count FROM post_likes GROUP BY post_id
-      ), share_counts AS (
-        SELECT post_id, COUNT(*)::int AS share_count FROM post_shares GROUP BY post_id
-      ), my_likes AS (
-        SELECT post_id FROM post_likes WHERE user_id = $1
-      )
       SELECT p.id, p.user_id, p.body, p.image_data, p.media_items, p.post_extras, p.visibility, p.created_at, u.full_name, u.profile_photo,
-             COALESCE(lc.like_count, 0)::int AS like_count,
-             COALESCE(sc.share_count, 0)::int AS share_count,
-             (ml.post_id IS NOT NULL) AS liked_by_me
+             (SELECT COUNT(*)::int FROM post_likes pl WHERE pl.post_id = p.id) AS like_count,
+             (SELECT COUNT(*)::int FROM post_shares ps WHERE ps.post_id = p.id) AS share_count,
+             EXISTS(SELECT 1 FROM post_likes mine WHERE mine.post_id = p.id AND mine.user_id = $1) AS liked_by_me
       FROM posts p
       JOIN users u ON u.id = p.user_id
-      LEFT JOIN like_counts lc ON lc.post_id = p.id
-      LEFT JOIN share_counts sc ON sc.post_id = p.id
-      LEFT JOIN my_likes ml ON ml.post_id = p.id
-      WHERE p.user_id = $1
+      WHERE ($2::bigint IS NULL OR p.user_id = $2)
+        AND ($3::timestamptz IS NULL OR p.created_at < $3 OR (p.created_at = $3 AND p.id < $4::bigint))
+        AND (p.user_id = $1
          OR (
            p.visibility <> 'only-me'
            AND (
@@ -4298,9 +4304,12 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
              ORDER BY recent.created_at DESC
              LIMIT 50
            )
-         )
+         ))
       ORDER BY p.created_at DESC
-    `, [request.user.id]);
+      LIMIT $5
+    `, [request.user.id, requestedUserId || null, cursor?.createdAt || null, cursor?.id || null, pageLimit ? pageLimit + 1 : 1000000]);
+    const hasMore = pageLimit > 0 && result.rows.length > pageLimit;
+    if (hasMore) result.rows = result.rows.slice(0, pageLimit);
     const commentsByPost = new Map();
     if (result.rows.length) {
       const ids = result.rows.map(row => String(row.id));
@@ -4391,7 +4400,7 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
         sourceReelsByPost.get(key).set(Number(row.source_media_index), String(row.id));
       });
     }
-    response.json({ posts: result.rows.map(row => ({
+    const deliveredPosts = result.rows.map(row => ({
       id: String(row.id),
       userId: String(row.user_id),
       body: row.body,
@@ -4412,7 +4421,12 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
       likedByMe: Boolean(row.liked_by_me),
       mediaStats: mediaStatsByPost.get(String(row.id)) || [],
       comments: commentsByPost.get(String(row.id)) || []
-    })) });
+    }));
+    response.set('Cache-Control', 'private, no-store');
+    response.json({
+      posts: deliveredPosts,
+      nextCursor: hasMore && result.rows.length ? postFeedCursorEncode(result.rows[result.rows.length - 1]) : ''
+    });
   } catch (error) {
     console.error('Posts load failed:', error.message);
     response.status(500).json({ error: 'Could not load posts.' });
@@ -6567,16 +6581,6 @@ async function messengerConversationBlocked(conversationId) {
   return result.rowCount>0;
 }
 function messengerAttachmentUrl(id) { return `/api/messaging/attachments/${encodeURIComponent(String(id))}`; }
-function messengerAttachmentViewMode(name) {
-  const value=String(name||'').toLowerCase();
-  if(value.includes('__vm1__')||value.includes('view-once'))return 1;
-  if(value.includes('__vm2__')||value.includes('view-twice'))return 2;
-  return 0;
-}
-function messengerAttachmentForViewer(attachment, senderId, viewerId) {
-  const a=attachment||{},viewMode=messengerAttachmentViewMode(a.name),openedCount=Number(a.openedCount??a.openedcount)||0,viewerOpenedCount=Number(a.viewerOpenedCount??a.vieweropenedcount)||0;
-  return{id:String(a.id),name:a.name||'',mimeType:a.mimeType||a.mimetype||'application/octet-stream',size:Number(a.size)||0,url:messengerAttachmentUrl(a.id),viewMode,opened:openedCount>0,openedCount,openedAt:a.openedAt||a.openedat||null,remainingViews:viewMode>0&&String(senderId)!==String(viewerId)?Math.max(0,viewMode-viewerOpenedCount):viewMode};
-}
 async function messengerSharedContent(contentType,contentId,viewerId) {
   const type=String(contentType||'').toLowerCase(),id=String(contentId||'');
   if(!validNumericId(id)||!['reel','post'].includes(type))return null;
@@ -6607,10 +6611,7 @@ async function loadMessengerMessage(messageId, viewerId) {
     SELECT m.id,m.conversation_id,m.sender_id,m.client_id,m.message_type,m.body,m.reply_to_id,m.forwarded_from_id,m.edited_at,m.deleted_at,m.created_at,
       COALESCE(NULLIF(BTRIM(mn.nickname),''),u.full_name,'Facebook user') AS sender_name,u.profile_photo AS sender_photo,
       ra.id AS reply_id,ra.body AS reply_body,ra.message_type AS reply_type,COALESCE(NULLIF(BTRIM(rn.nickname),''),ru.full_name,'Facebook user') AS reply_sender_name,
-      COALESCE((SELECT json_agg(json_build_object('id',a.id,'name',a.file_name,'mimeType',a.mime_type,'size',a.byte_size,
-                'openedCount',COALESCE((SELECT SUM(av.opened_count)::int FROM messenger_attachment_views av WHERE av.attachment_id=a.id),0),
-                'viewerOpenedCount',COALESCE((SELECT av.opened_count::int FROM messenger_attachment_views av WHERE av.attachment_id=a.id AND av.user_id=$2),0),
-                'openedAt',(SELECT MAX(av.last_opened_at) FROM messenger_attachment_views av WHERE av.attachment_id=a.id)) ORDER BY a.id)
+      COALESCE((SELECT json_agg(json_build_object('id',a.id,'name',a.file_name,'mimeType',a.mime_type,'size',a.byte_size) ORDER BY a.id)
                 FROM messenger_attachments a WHERE a.message_id=m.id),'[]'::json) AS attachments,
       COALESCE((SELECT json_agg(json_build_object('userId',r.user_id,'emoji',r.emoji,'name',COALESCE(ruser.full_name,'Facebook user')) ORDER BY r.created_at)
                 FROM messenger_message_reactions r LEFT JOIN users ruser ON ruser.id=r.user_id WHERE r.message_id=m.id),'[]'::json) AS reactions,
@@ -6637,7 +6638,7 @@ async function loadMessengerMessage(messageId, viewerId) {
     type:row.message_type||'text',body:row.deleted_at?'':(row.body||''),deleted:Boolean(row.deleted_at),forwarded:Boolean(row.forwarded_from_id),editedAt:row.edited_at||null,createdAt:row.created_at,
     sender:{id:row.sender_id?String(row.sender_id):'',name:row.sender_name||'Facebook user',avatar:avatarDeliveryUrl(row.sender_id,row.sender_photo)},
     reply:row.reply_id?{id:String(row.reply_id),body:row.reply_body||'',type:row.reply_type||'text',senderName:row.reply_sender_name||'Facebook user'}:null,
-    attachments:(Array.isArray(row.attachments)?row.attachments:[]).map(a=>messengerAttachmentForViewer(a,row.sender_id,viewerId)),
+    attachments:(Array.isArray(row.attachments)?row.attachments:[]).map(a=>({id:String(a.id),name:a.name||'',mimeType:a.mimeType||a.mimetype||'application/octet-stream',size:Number(a.size)||0,url:messengerAttachmentUrl(a.id)})),
     reactions:(Array.isArray(row.reactions)?row.reactions:[]).map(reaction=>({...reaction,avatar:avatarDeliveryUrl(reaction.userId||reaction.userid,''),mine:String(reaction.userId||reaction.userid)===String(viewerId)})),receipts,status,sharedContent
   };
 }
@@ -6684,10 +6685,7 @@ async function loadMessengerMessages(messageIds, viewerId) {
             'id', a.id,
             'name', a.file_name,
             'mimeType', a.mime_type,
-            'size', a.byte_size,
-            'openedCount', COALESCE((SELECT SUM(av.opened_count)::int FROM messenger_attachment_views av WHERE av.attachment_id=a.id),0),
-            'viewerOpenedCount', COALESCE((SELECT av.opened_count::int FROM messenger_attachment_views av WHERE av.attachment_id=a.id AND av.user_id=$2),0),
-            'openedAt', (SELECT MAX(av.last_opened_at) FROM messenger_attachment_views av WHERE av.attachment_id=a.id)
+            'size', a.byte_size
           )
           ORDER BY a.id
         )
@@ -6864,7 +6862,16 @@ async function loadMessengerMessages(messageIds, viewerId) {
           Array.isArray(row.attachments)
             ? row.attachments
             : []
-        ).map(a => messengerAttachmentForViewer(a,row.sender_id,viewerId)),
+        ).map(a => ({
+          id: String(a.id),
+          name: a.name || '',
+          mimeType:
+            a.mimeType ||
+            a.mimetype ||
+            'application/octet-stream',
+          size: Number(a.size) || 0,
+          url: messengerAttachmentUrl(a.id)
+        })),
 
       reactions:
         (
@@ -7405,22 +7412,6 @@ app.post('/api/messaging/conversations/:conversationId/attachment', requireApiAu
     if(!exists.rowCount)await pool.query(`INSERT INTO messenger_attachments(message_id,uploader_id,file_name,mime_type,byte_size,file_data) VALUES($1,$2,$3,$4,$5,$6)`,[messageId,request.user.id,fileName,mime,bytes.length,bytes]);
     const message=await messengerFinalizeMessage(messageId,cid,request.user.id); response.json({message});
   }catch(error){console.error('Messenger attachment failed:',error.message);response.status(500).json({error:'Could not send attachment.'});}
-});
-
-app.post('/api/messaging/messages/:messageId/open-media', requireApiAuth, async (request,response)=>{
-  const messageId=request.params.messageId;if(!validNumericId(messageId))return response.status(400).json({error:'Invalid message.'});
-  try{
-    await ensureDatabase();const attachmentId=validNumericId(request.body?.attachmentId)?String(request.body.attachmentId):null;
-    const result=await pool.query(`SELECT a.id,a.file_name,m.conversation_id,m.sender_id FROM messenger_messages m JOIN messenger_attachments a ON a.message_id=m.id WHERE m.id=$1 AND ($2::bigint IS NULL OR a.id=$2) ORDER BY a.id LIMIT 1`,[messageId,attachmentId]);
-    if(!result.rowCount)return response.status(404).json({error:'Media is unavailable.'});const row=result.rows[0],mode=messengerAttachmentViewMode(row.file_name);
-    if(mode<=0)return response.status(400).json({error:'This media has unlimited views.'});
-    if(String(row.sender_id)===String(request.user.id))return response.status(403).json({error:'The sender cannot consume this media.'});
-    if(!(await messengerRequireMember(row.conversation_id,request.user.id)))return response.status(403).json({error:'Conversation unavailable.'});
-    const opened=await pool.query(`INSERT INTO messenger_attachment_views(attachment_id,user_id,opened_count,first_opened_at,last_opened_at) VALUES($1,$2,1,NOW(),NOW()) ON CONFLICT(attachment_id,user_id) DO UPDATE SET opened_count=messenger_attachment_views.opened_count+1,last_opened_at=NOW() WHERE messenger_attachment_views.opened_count<$3 RETURNING opened_count,last_opened_at`,[row.id,request.user.id,mode]);
-    if(!opened.rowCount){const message=await loadMessengerMessage(messageId,request.user.id);return response.status(409).json({error:'This media is no longer available.',message});}
-    await messengerBroadcastPersonalizedMessage(row.conversation_id,'message_update',messageId);
-    const message=await loadMessengerMessage(messageId,request.user.id);response.json({message,remainingViews:Math.max(0,mode-Number(opened.rows[0].opened_count||0)),openedAt:opened.rows[0].last_opened_at});
-  }catch(error){console.error('Messenger limited media open failed:',error.message);response.status(500).json({error:'Could not open this media.'});}
 });
 
 app.get('/api/messaging/attachments/:attachmentId', requireApiAuth, async (request,response)=>{
