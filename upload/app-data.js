@@ -9862,10 +9862,100 @@ function installMarketplacePage(){
       const posts = Array.isArray(data.posts) ? data.posts : [];
       renderPostFeed(posts);
       cachePostFeed(posts);
+      latestPostPageSignature = postPageSignature(posts.slice(0, 4));
       refreshProfileContentCount(viewedProfile || profile);
     } catch (error) {
       console.error(error);
     }
+  }
+
+  /* A successful create/update response already contains the authoritative post.
+     Rendering that post is much cheaper than downloading and rebuilding the whole
+     feed, and it guarantees that an unconfirmed post is never shown. */
+  function confirmedWebsitePost(response, payload, previous) {
+    const saved = response && response.post;
+    if (!saved || !saved.id) return null;
+    const old = previous || {};
+    return Object.assign({}, old, saved, {
+      id: String(saved.id),
+      userId: String(saved.userId || old.userId || (profile && profile.id) || ''),
+      author: saved.author || old.author || (profile && profile.name) || 'Facebook user',
+      profilePhoto: saved.profilePhoto || old.profilePhoto || (profile && profile.profilePhoto) || '',
+      body: saved.body !== undefined ? saved.body : String(payload && payload.body || ''),
+      visibility: saved.visibility || (payload && payload.visibility) || old.visibility || 'public',
+      createdAt: saved.createdAt || old.createdAt || new Date().toISOString(),
+      media: Array.isArray(saved.media) ? saved.media : (Array.isArray(payload && payload.media) ? payload.media : (old.media || [])),
+      extras: saved.extras && typeof saved.extras === 'object' ? saved.extras : ((payload && payload.extras) || old.extras || {}),
+      likeCount: Number(saved.likeCount !== undefined ? saved.likeCount : (old.likeCount || 0)),
+      shareCount: Number(saved.shareCount !== undefined ? saved.shareCount : (old.shareCount || 0)),
+      commentCount: Number(saved.commentCount !== undefined ? saved.commentCount : (old.commentCount || 0)),
+      likedByMe: saved.likedByMe !== undefined ? Boolean(saved.likedByMe) : Boolean(old.likedByMe),
+      comments: Array.isArray(saved.comments) ? saved.comments : (Array.isArray(old.comments) ? old.comments : []),
+      mediaStats: Array.isArray(saved.mediaStats) ? saved.mediaStats : (Array.isArray(old.mediaStats) ? old.mediaStats : [])
+    });
+  }
+
+  function postPageSignature(posts) {
+    return JSON.stringify((Array.isArray(posts) ? posts : []).map(function (post) {
+      const media = Array.isArray(post && post.media) ? post.media : [];
+      return [String(post && post.id || ''), String(post && post.body || ''), String(post && post.visibility || ''),
+        String(post && post.createdAt || ''), media.map(function (item) {
+          return [String(item && item.type || ''), String(item && (item.url || item.data || '')).slice(0, 96), String(item && item.reelId || '')];
+        }), post && post.extras ? post.extras : {}];
+    }));
+  }
+
+  let latestPostPageSignature = '';
+  let latestPostPageRequest = null;
+
+  function mergeConfirmedWebsitePost(post) {
+    if (!post || !post.id) return false;
+    const id = String(post.id);
+    const index = postFeed.findIndex(function (item) { return String(item && item.id || '') === id; });
+    if (index >= 0) postFeed[index] = Object.assign({}, postFeed[index], post);
+    else postFeed.unshift(post);
+    renderPostFeed(postFeed);
+    cachePostFeed(postFeed);
+    latestPostPageSignature = postPageSignature(postFeed.slice(0, 4));
+    return true;
+  }
+
+  /* Other browser sessions only request the four newest rows. This makes new
+     confirmed posts visible quickly without repeatedly refreshing every post. */
+  function refreshLatestWebsitePosts(force) {
+    if (latestPostPageRequest) return latestPostPageRequest;
+    const page = document.body.dataset.page;
+    if (!force && document.visibilityState === 'hidden') return Promise.resolve(false);
+    if (!force && page !== 'home' && page !== 'profile') return Promise.resolve(false);
+    latestPostPageRequest = api('/api/posts?limit=4').then(function (data) {
+      const incoming = Array.isArray(data && data.posts) ? data.posts : [];
+      const signature = postPageSignature(incoming);
+      if (!force && signature === latestPostPageSignature) return false;
+      const incomingIds = new Set(incoming.map(function (post) { return String(post && post.id || ''); }));
+      const merged = incoming.concat(postFeed.filter(function (post) {
+        return !incomingIds.has(String(post && post.id || ''));
+      }));
+      latestPostPageSignature = signature;
+      renderPostFeed(merged);
+      cachePostFeed(merged);
+      return true;
+    }).catch(function (error) {
+      console.error('Latest post refresh failed:', error);
+      return false;
+    }).finally(function () {
+      latestPostPageRequest = null;
+    });
+    return latestPostPageRequest;
+  }
+
+  if (!window.__facebookLatestPostsTimer) {
+    window.__facebookLatestPostsTimer = setInterval(function () { refreshLatestWebsitePosts(false); }, 4000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') refreshLatestWebsitePosts(false);
+    });
+    window.addEventListener('facebook:post-change', function () {
+      refreshLatestWebsitePosts(true);
+    });
   }
 
   function storyCard(story) {
@@ -23853,13 +23943,15 @@ function installMarketplacePage(){
             closeOriginComposer();
             setActivePage('home');
             showPostUploadProgress(0, 'Preparing post…');
-            await apiWithUploadProgress('/api/posts/' + encodeURIComponent(state.item.id), { method: 'PATCH', body: JSON.stringify(payload) }, showPostUploadProgress);
-            await loadPosts();
-            await loadLatestReel();
-            await refreshProfileContentCount(profile);
+            const updatedPostResponse = await apiWithUploadProgress('/api/posts/' + encodeURIComponent(state.item.id), { method: 'PATCH', body: JSON.stringify(payload) }, showPostUploadProgress);
+            const confirmedUpdate = confirmedWebsitePost(updatedPostResponse, payload, state.item);
+            if (confirmedUpdate) mergeConfirmedWebsitePost(confirmedUpdate);
+            else await refreshLatestWebsitePosts(true);
             showPostUploadProgress(100, 'Post updated');
             setTimeout(resetPostUploadProgress, 650);
             message('Post updated');
+            Promise.resolve(loadLatestReel()).catch(function () {});
+            Promise.resolve(refreshProfileContentCount(profile)).catch(function () {});
             return;
           }
           closeOriginComposer();
@@ -23870,13 +23962,21 @@ function installMarketplacePage(){
           closeOriginComposer();
           setActivePage('home');
           showPostUploadProgress(0, 'Preparing post…');
-          await apiWithUploadProgress('/api/posts', { method: 'POST', body: JSON.stringify(payload) }, showPostUploadProgress);
-          await loadPosts();
-          await loadLatestReel();
-          await refreshProfileContentCount(profile);
+          const createdPostResponse = await apiWithUploadProgress('/api/posts', { method: 'POST', body: JSON.stringify(payload) }, showPostUploadProgress);
+          const confirmedPost = confirmedWebsitePost(createdPostResponse, payload, null);
+          if (confirmedPost) mergeConfirmedWebsitePost(confirmedPost);
+          else await refreshLatestWebsitePosts(true);
+          if (profile) {
+            profile.postCount = Math.max(0, Number(profile.postCount || 0) + 1);
+            profile.contentCount = Math.max(Number(profile.contentCount || 0), Number(profile.postCount || 0));
+            syncProfileTotalPostCount(profile);
+            cacheProfile();
+          }
           showPostUploadProgress(100, 'Post published');
           setTimeout(resetPostUploadProgress, 650);
           message('Post published');
+          Promise.resolve(loadLatestReel()).catch(function () {});
+          Promise.resolve(refreshProfileContentCount(profile)).catch(function () {});
           return;
         }
       } catch (error) {

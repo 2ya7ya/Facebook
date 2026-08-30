@@ -4499,6 +4499,7 @@ app.post('/api/posts', requireApiAuth, async (request, response) => {
       media: compactResponse ? [] : responseMedia,
       extras: compactResponse ? {} : (post.post_extras && typeof post.post_extras === 'object' ? post.post_extras : {})
     } });
+    messengerBroadcastAll({ type: 'post_created', postId: String(post.id) }, request.user.id);
     void createMentionNotifications(pool, request.user.id, body, post.id).catch(error => console.error('Post mention notification failed:', error.message));
   } catch (error) {
     console.error('Post creation failed:', error.message);
@@ -4580,6 +4581,7 @@ app.patch('/api/posts/:postId', requireApiAuth, async (request, response) => {
       media: compactResponse ? [] : responseMedia,
       extras: compactResponse ? {} : (post.post_extras && typeof post.post_extras === 'object' ? post.post_extras : {})
     } });
+    messengerBroadcastAll({ type: 'post_updated', postId: String(post.id) }, request.user.id);
   } catch (error) {
     console.error('Post update failed:', error.message);
     response.status(500).json({ error: 'Could not update the post.' });
@@ -6563,6 +6565,16 @@ function messengerSendToUser(userId, payload) {
   const encoded = JSON.stringify(payload);
   for (const socket of set) if (socket.readyState === WebSocket.OPEN) {
     try { socket.send(encoded); } catch (_error) {}
+  }
+}
+
+function messengerBroadcastAll(payload, excludeUserId) {
+  const encoded = JSON.stringify(payload);
+  for (const [userId, sockets] of messengerSocketsByUser) {
+    if (excludeUserId && String(userId) === String(excludeUserId)) continue;
+    for (const socket of sockets) if (socket.readyState === WebSocket.OPEN) {
+      try { socket.send(encoded); } catch (_error) {}
+    }
   }
 }
 
