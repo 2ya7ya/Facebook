@@ -1462,16 +1462,21 @@ async function transcodeReelFile(reelId, inputPath, sourceMimeType) {
   const thumbPath = path.join(tempDirectory, 'thumb.jpg');
   try {
     const ffmpeg = ffmpegBinary();
+    /* Encode sequentially. Running two x264 outputs in one filter graph can
+       exceed the 512 MB production worker limit and leave source-only reels. */
     await runProcess(ffmpeg, [
       '-hide_banner','-loglevel','error','-y','-i',inputPath,
-      '-filter_complex',
-      "[0:v]split=2[vlo0][vhi0];[vlo0]scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[vlo];[vhi0]scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[vhi]",
-      '-map','[vlo]','-map','0:a:0?','-c:v','libx264','-preset','veryfast','-profile:v','main','-pix_fmt','yuv420p',
+      '-map','0:v:0','-map','0:a:0?','-vf',"scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+      '-c:v','libx264','-preset','veryfast','-profile:v','main','-level:v','4.0','-pix_fmt','yuv420p','-tag:v','avc1',
       '-b:v','320k','-maxrate','420k','-bufsize','840k','-force_key_frames','expr:gte(t,n_forced*2)',
-      '-c:a','aac','-b:a','64k','-ac','2','-movflags','+faststart', lowPath,
-      '-map','[vhi]','-map','0:a:0?','-c:v','libx264','-preset','veryfast','-profile:v','main','-pix_fmt','yuv420p',
+      '-c:a','aac','-ar','48000','-b:a','64k','-ac','2','-movflags','+faststart', lowPath
+    ]);
+    await runProcess(ffmpeg, [
+      '-hide_banner','-loglevel','error','-y','-i',inputPath,
+      '-map','0:v:0','-map','0:a:0?','-vf',"scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+      '-c:v','libx264','-preset','veryfast','-profile:v','main','-level:v','4.0','-pix_fmt','yuv420p','-tag:v','avc1',
       '-b:v','720k','-maxrate','900k','-bufsize','1800k','-force_key_frames','expr:gte(t,n_forced*2)',
-      '-c:a','aac','-b:a','96k','-ac','2','-movflags','+faststart', highPath
+      '-c:a','aac','-ar','48000','-b:a','96k','-ac','2','-movflags','+faststart', highPath
     ]);
     await runProcess(ffmpeg, [
       '-hide_banner','-loglevel','error','-y','-ss','0.15','-i',lowPath,
@@ -5694,10 +5699,24 @@ app.get('/api/reels/:reelId/video', requireApiAuth, async (request, response) =>
     let quality=String(request.query.quality||'high').toLowerCase();
     const ect=String(request.headers.ect||'').toLowerCase();
     const saveData=String(request.headers['save-data']||'').toLowerCase()==='on';
+    const nativePlayback=String(request.headers['x-facetok-native']||'')==='1';
     if(quality==='auto')quality=(saveData||ect==='2g'||ect==='slow-2g'||ect==='3g')?'low':'high';
     if(!['low','high'].includes(quality))quality='high';
     if(await sendReelVariantRange(request,response,reelId,quality))return;
     if(quality==='high'&&await sendReelVariantRange(request,response,reelId,'low'))return;
+    /* Native Android playback must never receive an arbitrary source upload.
+       Older/source-only rows may be HEVC, QuickTime, WebM or another stream
+       that Android MediaPlayer can open for audio while rendering no frames.
+       Produce the existing H.264 Main/yuv420p/AAC fast-start variant on demand,
+       then serve that byte-range response. The serialized encode queue prevents
+       multiple requests from starting duplicate FFmpeg jobs. */
+    if(nativePlayback){
+      try{
+        const ready=await ensureReelVariants(reelId);
+        if(ready&&await sendReelVariantRange(request,response,reelId,quality))return;
+        if(ready&&quality==='high'&&await sendReelVariantRange(request,response,reelId,'low'))return;
+      }catch(error){console.error('Native Reel compatibility encode failed:',reelId,error.message);}
+    }
     if(await sendReelVariantRange(request,response,reelId,'source'))return;
     /* Pre-v55 legacy rows can still be served, but never trigger FFmpeg here. */
     const source=await reelLegacySource(reelId);
@@ -5790,6 +5809,7 @@ app.put('/api/reel-uploads/:uploadId', requireApiAuth, express.raw({type:['video
       await storeReelVariant(client,reel.id,'source',session.mime_type,bytes);
       await client.query('DELETE FROM reel_upload_sessions WHERE id=$1',[uploadId]);
       await client.query('COMMIT');
+      setImmediate(()=>ensureReelVariants(String(reel.id)).catch(error=>console.error('Reel compatibility encode failed:',reel.id,error.message)));
       response.status(201).json({ok:true,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),thumbnailUrl:reelThumbnailUrl(reel.id)}});
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   }catch(error){console.error('Reel binary upload failed:',error.message);response.status(500).json({error:'Could not upload the Reel. Try again.'});}
@@ -5856,6 +5876,7 @@ app.post('/api/reels', requireApiAuth, async (request, response) => {
         [reel.id,thumbnailMimeType,thumbnailBytes]);
     }
     sourceBytes=null;thumbnailBytes=null;
+    setImmediate(()=>ensureReelVariants(String(reel.id)).catch(error=>console.error('Reel compatibility encode failed:',reel.id,error.message)));
     response.status(201).json({ok:true,processing:false,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),thumbnailUrl:reelThumbnailUrl(reel.id)}});
   }catch(error){console.error('Reel creation failed:',error);response.status(500).json({error:'Could not publish the reel.'});}
 });
