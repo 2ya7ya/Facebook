@@ -5731,7 +5731,7 @@ app.get('/api/reels/:reelId/video', requireApiAuth, async (request, response) =>
     let quality=String(request.query.quality||'high').toLowerCase();
     const ect=String(request.headers.ect||'').toLowerCase();
     const saveData=String(request.headers['save-data']||'').toLowerCase()==='on';
-    const nativePlayback=String(request.headers['x-facetok-native']||'')==='1';
+    const nativePlayback=String(request.headers['x-facetok-native']||'')==='1' || String(request.query.native||'')==='1';
     if(quality==='auto'){
       if(nativePlayback)quality='720';
       else if(saveData||ect==='2g'||ect==='slow-2g')quality='360';
