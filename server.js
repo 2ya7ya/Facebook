@@ -1466,19 +1466,22 @@ async function storeReelVariant(queryable, reelId, variant, mimeType, bytes) {
 async function transcodeReelFile(reelId, inputPath, sourceMimeType) {
   const tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'facebook-reel-encode-'));
   const thumbPath = path.join(tempDirectory, 'thumb.jpg');
+  /* 720p is deliberately encoded first because the native Android Reel viewer
+     uses it as its startup rendition. Each completed rendition is committed
+     immediately, so playback does not wait for the entire ladder. */
   const ladder = [
+    { variant:'720',  edge:1280, crf:'22', maxrate:'2800k', bufsize:'5600k', audio:'128k', profile:'main', level:'4.0' },
     { variant:'360',  edge:640,  crf:'24', maxrate:'650k',  bufsize:'1300k', audio:'64k',  profile:'main', level:'3.1' },
     { variant:'480',  edge:854,  crf:'23', maxrate:'1300k', bufsize:'2600k', audio:'96k',  profile:'main', level:'3.1' },
-    { variant:'720',  edge:1280, crf:'22', maxrate:'2800k', bufsize:'5600k', audio:'128k', profile:'main', level:'4.0' },
     { variant:'1080', edge:1920, crf:'20', maxrate:'5000k', bufsize:'10000k',audio:'128k', profile:'high', level:'4.2' }
   ];
   const encoded = new Map();
   try {
     const ffmpeg = ffmpegBinary();
-    /* Production-safe ABR ladder: encode one rendition at a time so a small
-       worker never has four x264 encoders resident simultaneously. The scale
-       expression never upscales the source and keeps even dimensions. */
+    const existingResult = await pool.query(`SELECT variant FROM reel_video_variants WHERE reel_id=$1`, [reelId]);
+    const existing = new Set(existingResult.rows.map(row => String(row.variant)));
     for (const item of ladder) {
+      if (existing.has(item.variant)) continue;
       const outputPath = path.join(tempDirectory, item.variant + '.mp4');
       await runProcess(ffmpeg, [
         '-hide_banner','-loglevel','error','-y','-i',inputPath,
@@ -1489,31 +1492,38 @@ async function transcodeReelFile(reelId, inputPath, sourceMimeType) {
         '-force_key_frames','expr:gte(t,n_forced*2)',
         '-c:a','aac','-ar','48000','-b:a',item.audio,'-ac','2','-movflags','+faststart', outputPath
       ]);
-      encoded.set(item.variant, await fs.promises.readFile(outputPath));
+      const bytes = await fs.promises.readFile(outputPath);
+      encoded.set(item.variant, bytes);
+      /* Commit each rendition as soon as it is ready. If a later encode fails,
+         already completed renditions and the untouched source remain valid. */
+      await storeReelVariant(pool, reelId, item.variant, 'video/mp4', bytes);
     }
+
+    const have480 = await pool.query(`SELECT 1 FROM reel_video_variants WHERE reel_id=$1 AND variant='480' LIMIT 1`, [reelId]);
+    const thumbInput = have480.rowCount ? await (async()=>{
+      const r=await pool.query(`SELECT video_data FROM reel_video_variants WHERE reel_id=$1 AND variant='480' LIMIT 1`,[reelId]);
+      const f=path.join(tempDirectory,'thumb-source.mp4');await fs.promises.writeFile(f,r.rows[0].video_data);return f;
+    })() : inputPath;
     await runProcess(ffmpeg, [
-      '-hide_banner','-loglevel','error','-y','-ss','0.15','-i',path.join(tempDirectory,'480.mp4'),
+      '-hide_banner','-loglevel','error','-y','-ss','0.15','-i',thumbInput,
       '-frames:v','1','-vf',"scale=w='min(360,iw)':h='min(640,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
       '-q:v','5',thumbPath
     ]);
     const thumb = await fs.promises.readFile(thumbPath);
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      for (const item of ladder) await storeReelVariant(client, reelId, item.variant, 'video/mp4', encoded.get(item.variant));
-      await client.query(
-        `INSERT INTO reel_thumbnails (reel_id,mime_type,image_data) VALUES ($1,'image/jpeg',$2)
-         ON CONFLICT (reel_id) DO UPDATE SET mime_type=EXCLUDED.mime_type,image_data=EXCLUDED.image_data,created_at=NOW()`,
-        [reelId, thumb]
-      );
-      /* Keep legacy aliases out of new storage to avoid duplicate BYTEA data.
-         The delivery route maps high->1080 and low->360. Remove the temporary
-         source only after every rendition and thumbnail committed successfully. */
-      await client.query(`DELETE FROM reel_video_variants WHERE reel_id=$1 AND variant IN ('source','low','high')`, [reelId]);
-      await client.query(`UPDATE reels SET mime_type='video/mp4', video_data=NULL WHERE id=$1`, [reelId]);
-      await client.query('COMMIT');
-    } catch (error) { await client.query('ROLLBACK'); throw error; }
-    finally { client.release(); }
+    await pool.query(
+      `INSERT INTO reel_thumbnails (reel_id,mime_type,image_data) VALUES ($1,'image/jpeg',$2)
+       ON CONFLICT (reel_id) DO UPDATE SET mime_type=EXCLUDED.mime_type,image_data=EXCLUDED.image_data,created_at=NOW()`,
+      [reelId, thumb]
+    );
+
+    const complete = await pool.query(`SELECT variant FROM reel_video_variants WHERE reel_id=$1 AND variant IN ('360','480','720','1080')`, [reelId]);
+    const completed = new Set(complete.rows.map(row => String(row.variant)));
+    if (['360','480','720','1080'].every(name => completed.has(name))) {
+      /* Only after the complete ladder and thumbnail exist is it safe to remove
+         the temporary source/legacy aliases. */
+      await pool.query(`DELETE FROM reel_video_variants WHERE reel_id=$1 AND variant IN ('source','low','high')`, [reelId]);
+      await pool.query(`UPDATE reels SET mime_type='video/mp4', video_data=NULL WHERE id=$1`, [reelId]);
+    }
     return Object.fromEntries([...encoded].map(([variant,bytes]) => [variant + 'Bytes', bytes.length]));
   } finally {
     await fs.promises.rm(tempDirectory, { recursive:true, force:true }).catch(()=>{});
@@ -5723,14 +5733,18 @@ app.get('/api/reels/:reelId/video', requireApiAuth, async (request, response) =>
     const saveData=String(request.headers['save-data']||'').toLowerCase()==='on';
     const nativePlayback=String(request.headers['x-facetok-native']||'')==='1';
     if(quality==='auto'){
-      if(saveData||ect==='2g'||ect==='slow-2g')quality='360';
+      if(nativePlayback)quality='720';
+      else if(saveData||ect==='2g'||ect==='slow-2g')quality='360';
       else if(ect==='3g')quality='480';
       else if(ect==='4g')quality='720';
       else quality='1080';
     }
-    const alias={high:'1080',low:'360'};
+    /* The native client historically asks for videoLow first. Treat both of its
+       legacy aliases as the fast 720p startup rendition while preserving the
+       public low=360/high=1080 meanings for browser clients. */
+    const alias=nativePlayback?{high:'720',low:'720'}:{high:'1080',low:'360'};
     if(alias[quality])quality=alias[quality];
-    if(!['360','480','720','1080'].includes(quality))quality='1080';
+    if(!['360','480','720','1080'].includes(quality))quality=nativePlayback?'720':'1080';
     const fallbackByQuality={
       '1080':['1080','high','720','480','360','low'],
       '720':['720','1080','high','480','360','low'],
@@ -5747,9 +5761,16 @@ app.get('/api/reels/:reelId/video', requireApiAuth, async (request, response) =>
        503 retry behavior if the compatibility ladder is not ready yet. */
     if(nativePlayback){
       try{
-        const ready=await ensureReelVariants(reelId);
-        if(ready&&await tryVariants())return;
-        console.error('Native Reel compatibility encode produced no playable variant:',reelId);
+        /* Start/attach to the serialized encode job, but do not wait for the
+           entire four-rendition ladder. Poll briefly and return as soon as the
+           startup rendition has been committed. */
+        ensureReelVariants(reelId).catch(error=>console.error('Native Reel compatibility encode failed:',reelId,error.message));
+        const deadline=Date.now()+12000;
+        while(Date.now()<deadline){
+          if(await tryVariants())return;
+          await new Promise(resolve=>setTimeout(resolve,250));
+        }
+        console.error('Native Reel startup rendition was not ready in time:',reelId);
       }catch(error){console.error('Native Reel compatibility encode failed:',reelId,error.message);}
       response.setHeader('Cache-Control','no-store');
       response.setHeader('Retry-After','3');
