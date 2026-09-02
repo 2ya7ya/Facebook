@@ -601,7 +601,7 @@ async function ensureDatabase() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reel_video_variants (
       reel_id BIGINT NOT NULL REFERENCES reels(id) ON DELETE CASCADE,
-      variant VARCHAR(16) NOT NULL CHECK (variant IN ('source','low','high')),
+      variant VARCHAR(16) NOT NULL CHECK (variant IN ('source','low','high','360','480','720','1080')),
       mime_type VARCHAR(80) NOT NULL DEFAULT 'video/mp4',
       byte_length INTEGER NOT NULL DEFAULT 0,
       video_data BYTEA NOT NULL,
@@ -609,6 +609,10 @@ async function ensureDatabase() {
       PRIMARY KEY (reel_id, variant)
     )
   `);
+  /* Expand the legacy low/high constraint in-place. Existing rows remain valid,
+     and old app versions can continue requesting low/high aliases. */
+  await pool.query('ALTER TABLE reel_video_variants DROP CONSTRAINT IF EXISTS reel_video_variants_variant_check');
+  await pool.query("ALTER TABLE reel_video_variants ADD CONSTRAINT reel_video_variants_variant_check CHECK (variant IN ('source','low','high','360','480','720','1080'))");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reel_thumbnails (
       reel_id BIGINT PRIMARY KEY REFERENCES reels(id) ON DELETE CASCADE,
@@ -1461,65 +1465,75 @@ async function storeReelVariant(queryable, reelId, variant, mimeType, bytes) {
 
 async function transcodeReelFile(reelId, inputPath, sourceMimeType) {
   const tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'facebook-reel-encode-'));
-  const lowPath = path.join(tempDirectory, 'low.mp4');
-  const highPath = path.join(tempDirectory, 'high.mp4');
   const thumbPath = path.join(tempDirectory, 'thumb.jpg');
+  const ladder = [
+    { variant:'360',  edge:640,  crf:'24', maxrate:'650k',  bufsize:'1300k', audio:'64k',  profile:'main', level:'3.1' },
+    { variant:'480',  edge:854,  crf:'23', maxrate:'1300k', bufsize:'2600k', audio:'96k',  profile:'main', level:'3.1' },
+    { variant:'720',  edge:1280, crf:'22', maxrate:'2800k', bufsize:'5600k', audio:'128k', profile:'main', level:'4.0' },
+    { variant:'1080', edge:1920, crf:'20', maxrate:'5000k', bufsize:'10000k',audio:'128k', profile:'high', level:'4.2' }
+  ];
+  const encoded = new Map();
   try {
     const ffmpeg = ffmpegBinary();
-    /* Encode sequentially. Running two x264 outputs in one filter graph can
-       exceed the 512 MB production worker limit and leave source-only reels. */
+    /* Production-safe ABR ladder: encode one rendition at a time so a small
+       worker never has four x264 encoders resident simultaneously. The scale
+       expression never upscales the source and keeps even dimensions. */
+    for (const item of ladder) {
+      const outputPath = path.join(tempDirectory, item.variant + '.mp4');
+      await runProcess(ffmpeg, [
+        '-hide_banner','-loglevel','error','-y','-i',inputPath,
+        '-map','0:v:0','-map','0:a:0?',
+        '-vf',`scale=w='min(${item.edge},iw)':h='min(${item.edge},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`,
+        '-c:v','libx264','-preset','veryfast','-profile:v',item.profile,'-level:v',item.level,
+        '-pix_fmt','yuv420p','-tag:v','avc1','-crf',item.crf,'-maxrate',item.maxrate,'-bufsize',item.bufsize,
+        '-force_key_frames','expr:gte(t,n_forced*2)',
+        '-c:a','aac','-ar','48000','-b:a',item.audio,'-ac','2','-movflags','+faststart', outputPath
+      ]);
+      encoded.set(item.variant, await fs.promises.readFile(outputPath));
+    }
     await runProcess(ffmpeg, [
-      '-hide_banner','-loglevel','error','-y','-i',inputPath,
-      '-map','0:v:0','-map','0:a:0?','-vf',"scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-      '-c:v','libx264','-preset','veryfast','-profile:v','main','-level:v','4.0','-pix_fmt','yuv420p','-tag:v','avc1',
-      '-b:v','320k','-maxrate','420k','-bufsize','840k','-force_key_frames','expr:gte(t,n_forced*2)',
-      '-c:a','aac','-ar','48000','-b:a','64k','-ac','2','-movflags','+faststart', lowPath
-    ]);
-    await runProcess(ffmpeg, [
-      '-hide_banner','-loglevel','error','-y','-i',inputPath,
-      '-map','0:v:0','-map','0:a:0?','-vf',"scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-      '-c:v','libx264','-preset','veryfast','-profile:v','main','-level:v','4.0','-pix_fmt','yuv420p','-tag:v','avc1',
-      '-b:v','720k','-maxrate','900k','-bufsize','1800k','-force_key_frames','expr:gte(t,n_forced*2)',
-      '-c:a','aac','-ar','48000','-b:a','96k','-ac','2','-movflags','+faststart', highPath
-    ]);
-    await runProcess(ffmpeg, [
-      '-hide_banner','-loglevel','error','-y','-ss','0.15','-i',lowPath,
+      '-hide_banner','-loglevel','error','-y','-ss','0.15','-i',path.join(tempDirectory,'480.mp4'),
       '-frames:v','1','-vf',"scale=w='min(360,iw)':h='min(640,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
       '-q:v','5',thumbPath
     ]);
-    const [low, high, thumb] = await Promise.all([
-      fs.promises.readFile(lowPath), fs.promises.readFile(highPath), fs.promises.readFile(thumbPath)
-    ]);
+    const thumb = await fs.promises.readFile(thumbPath);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await storeReelVariant(client, reelId, 'low', 'video/mp4', low);
-      await storeReelVariant(client, reelId, 'high', 'video/mp4', high);
+      for (const item of ladder) await storeReelVariant(client, reelId, item.variant, 'video/mp4', encoded.get(item.variant));
       await client.query(
         `INSERT INTO reel_thumbnails (reel_id,mime_type,image_data) VALUES ($1,'image/jpeg',$2)
          ON CONFLICT (reel_id) DO UPDATE SET mime_type=EXCLUDED.mime_type,image_data=EXCLUDED.image_data,created_at=NOW()`,
         [reelId, thumb]
       );
-      await client.query(`DELETE FROM reel_video_variants WHERE reel_id=$1 AND variant='source'`, [reelId]);
+      /* Keep legacy aliases out of new storage to avoid duplicate BYTEA data.
+         The delivery route maps high->1080 and low->360. Remove the temporary
+         source only after every rendition and thumbnail committed successfully. */
+      await client.query(`DELETE FROM reel_video_variants WHERE reel_id=$1 AND variant IN ('source','low','high')`, [reelId]);
       await client.query(`UPDATE reels SET mime_type='video/mp4', video_data=NULL WHERE id=$1`, [reelId]);
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
-    return { lowBytes:low.length, highBytes:high.length };
+    return Object.fromEntries([...encoded].map(([variant,bytes]) => [variant + 'Bytes', bytes.length]));
   } finally {
     await fs.promises.rm(tempDirectory, { recursive:true, force:true }).catch(()=>{});
   }
 }
 
 async function ensureReelVariants(reelId) {
-  const existing = await pool.query(`SELECT variant FROM reel_video_variants WHERE reel_id=$1 AND variant IN ('low','high')`, [reelId]);
-  if (existing.rows.some(row => row.variant === 'low') && existing.rows.some(row => row.variant === 'high')) return true;
+  const existing = await pool.query(`SELECT variant FROM reel_video_variants WHERE reel_id=$1`, [reelId]);
+  const variants = new Set(existing.rows.map(row => String(row.variant)));
+  if (['360','480','720','1080'].every(name => variants.has(name))) return true;
+  /* Legacy reels encoded before the ladder migration may only have low/high and
+     no source master left. They stay fully playable rather than being broken by
+     an impossible backfill. */
+  if (!variants.has('source') && variants.has('low') && variants.has('high')) return true;
   if (reelVariantJobs.has(String(reelId))) return reelVariantJobs.get(String(reelId));
   const task = async () => {
     const source = await reelLegacySource(reelId);
     if (!source || !source.bytes.length) return false;
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'facebook-reel-source-'));
-    const ext = source.mimeType.includes('webm') ? '.webm' : '.mp4';
+    const ext = source.mimeType.includes('webm') ? '.webm' : (source.mimeType.includes('quicktime') ? '.mov' : '.mp4');
     const input = path.join(dir, 'input' + ext);
     try { await fs.promises.writeFile(input, source.bytes); await transcodeReelFile(reelId, input, source.mimeType); return true; }
     finally { await fs.promises.rm(dir, { recursive:true, force:true }).catch(()=>{}); }
@@ -5584,7 +5598,7 @@ app.get('/api/reels', requireApiAuth, async (request, response) => {
     /* Never launch Reel FFmpeg jobs from feed metadata on the 512 MB web tier. */
     const reels=rows.map(row=>({
       id:String(row.id),userId:String(row.user_id),caption:row.caption||'',
-      video:reelVideoUrl(row.id,'high'),videoHigh:reelVideoUrl(row.id,'high'),videoLow:reelVideoUrl(row.id,'low'),
+      video:reelVideoUrl(row.id,'high'),videoHigh:reelVideoUrl(row.id,'high'),videoLow:reelVideoUrl(row.id,'low'),video1080:reelVideoUrl(row.id,'1080'),video720:reelVideoUrl(row.id,'720'),video480:reelVideoUrl(row.id,'480'),video360:reelVideoUrl(row.id,'360'),
       thumbnailUrl:reelThumbnailUrl(row.id),mimeType:'video/mp4',visibility:row.visibility,allowComments:Boolean(row.allow_comments),
       editData:stripHeavyReelEditData(row.edit_data),sourcePostId:row.source_post_id?String(row.source_post_id):'',
       sourceMediaIndex:row.source_media_index===null||row.source_media_index===undefined?null:Number(row.source_media_index),
@@ -5645,6 +5659,10 @@ app.get('/api/reels/library', requireApiAuth, async (request, response) => {
         video:reelVideoUrl(row.id,'high'),
         videoHigh:reelVideoUrl(row.id,'high'),
         videoLow:reelVideoUrl(row.id,'low'),
+        video1080:reelVideoUrl(row.id,'1080'),
+        video720:reelVideoUrl(row.id,'720'),
+        video480:reelVideoUrl(row.id,'480'),
+        video360:reelVideoUrl(row.id,'360'),
         thumbnailUrl:reelThumbnailUrl(row.id),
         thumbnailReady:Boolean(row.thumbnail_ready),
         mimeType:'video/mp4',
@@ -5704,33 +5722,40 @@ app.get('/api/reels/:reelId/video', requireApiAuth, async (request, response) =>
     const ect=String(request.headers.ect||'').toLowerCase();
     const saveData=String(request.headers['save-data']||'').toLowerCase()==='on';
     const nativePlayback=String(request.headers['x-facetok-native']||'')==='1';
-    if(quality==='auto')quality=(saveData||ect==='2g'||ect==='slow-2g'||ect==='3g')?'low':'high';
-    if(!['low','high'].includes(quality))quality='high';
-    if(await sendReelVariantRange(request,response,reelId,quality))return;
-    if(quality==='high'&&await sendReelVariantRange(request,response,reelId,'low'))return;
+    if(quality==='auto'){
+      if(saveData||ect==='2g'||ect==='slow-2g')quality='360';
+      else if(ect==='3g')quality='480';
+      else if(ect==='4g')quality='720';
+      else quality='1080';
+    }
+    const alias={high:'1080',low:'360'};
+    if(alias[quality])quality=alias[quality];
+    if(!['360','480','720','1080'].includes(quality))quality='1080';
+    const fallbackByQuality={
+      '1080':['1080','high','720','480','360','low'],
+      '720':['720','1080','high','480','360','low'],
+      '480':['480','720','1080','high','360','low'],
+      '360':['360','low','480','720','1080','high']
+    };
+    const tryVariants=async()=>{
+      for(const candidate of fallbackByQuality[quality])if(await sendReelVariantRange(request,response,reelId,candidate))return true;
+      return false;
+    };
+    if(await tryVariants())return;
     /* Native Android playback must never receive an arbitrary source upload.
-       Older/source-only rows may be HEVC, QuickTime, WebM or another stream
-       that Android MediaPlayer can open for audio while rendering no frames.
-       Produce the existing H.264 Main/yuv420p/AAC fast-start variant on demand,
-       then serve that byte-range response. The serialized encode queue prevents
-       multiple requests from starting duplicate FFmpeg jobs. */
+       Generate H.264/yuv420p/AAC variants on demand and keep the established
+       503 retry behavior if the compatibility ladder is not ready yet. */
     if(nativePlayback){
       try{
         const ready=await ensureReelVariants(reelId);
-        if(ready&&await sendReelVariantRange(request,response,reelId,quality))return;
-        if(ready&&quality==='high'&&await sendReelVariantRange(request,response,reelId,'low'))return;
+        if(ready&&await tryVariants())return;
         console.error('Native Reel compatibility encode produced no playable variant:',reelId);
       }catch(error){console.error('Native Reel compatibility encode failed:',reelId,error.message);}
-      /* Never fall through to an arbitrary HEVC/QuickTime/WebM source for the
-         native Android player. Keeping the poster visible is preferable to
-         audio-only playback on a black surface. A later request can retry once
-         the serialized compatibility encode has completed. */
       response.setHeader('Cache-Control','no-store');
       response.setHeader('Retry-After','3');
       return response.status(503).json({error:'Android-compatible Reel video is not ready yet.',code:'REEL_VARIANT_UNAVAILABLE',retryable:true});
     }
     if(await sendReelVariantRange(request,response,reelId,'source'))return;
-    /* Pre-v55 legacy rows can still be served, but never trigger FFmpeg here. */
     const source=await reelLegacySource(reelId);
     if(!source)return response.status(404).json({error:'Video media not found.'});
     return sendBufferRange(request,response,source.bytes,source.mimeType,'private, max-age=31536000, immutable');
@@ -5767,7 +5792,7 @@ app.get('/api/reels/resolve', requireApiAuth, async (request, response) => {
     response.set('Cache-Control','private, max-age=5');
     response.json({reel:{
       id:String(row.id),userId:String(row.user_id),caption:row.caption||'',
-      video:reelVideoUrl(row.id,'high'),videoHigh:reelVideoUrl(row.id,'high'),videoLow:reelVideoUrl(row.id,'low'),
+      video:reelVideoUrl(row.id,'high'),videoHigh:reelVideoUrl(row.id,'high'),videoLow:reelVideoUrl(row.id,'low'),video1080:reelVideoUrl(row.id,'1080'),video720:reelVideoUrl(row.id,'720'),video480:reelVideoUrl(row.id,'480'),video360:reelVideoUrl(row.id,'360'),
       thumbnailUrl:reelThumbnailUrl(row.id),mimeType:row.mime_type||'video/mp4',visibility:row.visibility,allowComments:Boolean(row.allow_comments),
       editData:stripHeavyReelEditData(row.edit_data),sourcePostId:row.source_post_id?String(row.source_post_id):'',
       sourceMediaIndex:row.source_media_index===null||row.source_media_index===undefined?null:Number(row.source_media_index),
@@ -5822,7 +5847,7 @@ app.put('/api/reel-uploads/:uploadId', requireApiAuth, express.raw({type:['video
       await client.query('DELETE FROM reel_upload_sessions WHERE id=$1',[uploadId]);
       await client.query('COMMIT');
       setImmediate(()=>ensureReelVariants(String(reel.id)).catch(error=>console.error('Reel compatibility encode failed:',reel.id,error.message)));
-      response.status(201).json({ok:true,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),thumbnailUrl:reelThumbnailUrl(reel.id)}});
+      response.status(201).json({ok:true,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),video1080:reelVideoUrl(reel.id,'1080'),video720:reelVideoUrl(reel.id,'720'),video480:reelVideoUrl(reel.id,'480'),video360:reelVideoUrl(reel.id,'360'),thumbnailUrl:reelThumbnailUrl(reel.id)}});
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   }catch(error){console.error('Reel binary upload failed:',error.message);response.status(500).json({error:'Could not upload the Reel. Try again.'});}
 });
@@ -5889,7 +5914,7 @@ app.post('/api/reels', requireApiAuth, async (request, response) => {
     }
     sourceBytes=null;thumbnailBytes=null;
     setImmediate(()=>ensureReelVariants(String(reel.id)).catch(error=>console.error('Reel compatibility encode failed:',reel.id,error.message)));
-    response.status(201).json({ok:true,processing:false,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),thumbnailUrl:reelThumbnailUrl(reel.id)}});
+    response.status(201).json({ok:true,processing:false,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),video1080:reelVideoUrl(reel.id,'1080'),video720:reelVideoUrl(reel.id,'720'),video480:reelVideoUrl(reel.id,'480'),video360:reelVideoUrl(reel.id,'360'),thumbnailUrl:reelThumbnailUrl(reel.id)}});
   }catch(error){console.error('Reel creation failed:',error);response.status(500).json({error:'Could not publish the reel.'});}
 });
 
