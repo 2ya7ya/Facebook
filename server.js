@@ -1434,8 +1434,12 @@ async function reelLegacySource(reelId) {
   let data = row.video_data || '';
   let mimeType = row.mime_type || '';
   if (row.source_post_id) {
-    const media = normalizeStoredPostMedia(row.media_items, row.image_data || '');
-    const item = media[Number(row.source_media_index || 0)];
+    /* source_media_index refers to the original post array. Normalizing the
+       whole array first can remove invalid/legacy entries and shift indexes,
+       making a valid linked Reel appear to have no source video. */
+    const storedMedia = Array.isArray(row.media_items) ? row.media_items : [];
+    const sourceItem = storedMedia[Number(row.source_media_index || 0)];
+    const item = sourceItem ? normalizeStoredPostMedia([sourceItem], '')[0] : null;
     if (item && item.type === 'video' && item.data) {
       data = item.data;
       mimeType = item.mimeType || mimeType;
@@ -5715,7 +5719,15 @@ app.get('/api/reels/:reelId/video', requireApiAuth, async (request, response) =>
         const ready=await ensureReelVariants(reelId);
         if(ready&&await sendReelVariantRange(request,response,reelId,quality))return;
         if(ready&&quality==='high'&&await sendReelVariantRange(request,response,reelId,'low'))return;
+        console.error('Native Reel compatibility encode produced no playable variant:',reelId);
       }catch(error){console.error('Native Reel compatibility encode failed:',reelId,error.message);}
+      /* Never fall through to an arbitrary HEVC/QuickTime/WebM source for the
+         native Android player. Keeping the poster visible is preferable to
+         audio-only playback on a black surface. A later request can retry once
+         the serialized compatibility encode has completed. */
+      response.setHeader('Cache-Control','no-store');
+      response.setHeader('Retry-After','3');
+      return response.status(503).json({error:'Android-compatible Reel video is not ready yet.',code:'REEL_VARIANT_UNAVAILABLE',retryable:true});
     }
     if(await sendReelVariantRange(request,response,reelId,'source'))return;
     /* Pre-v55 legacy rows can still be served, but never trigger FFmpeg here. */
