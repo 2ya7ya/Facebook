@@ -22109,14 +22109,13 @@ function installMarketplacePage(){
       const videoB = document.createElement('video');
       [videoA, videoB].forEach(function (video) { video.src = sourceData; video.playsInline = true; video.preload = 'auto'; video.crossOrigin = 'anonymous'; });
       await Promise.all([waitForMedia(videoA), waitForMedia(videoB)]);
-      /* High-quality Reel upload mezzanine.
-         Preserve up to 1080x1920 detail for the server-side encoder instead of
-         pre-compressing edited Reels to ~3 Mbps / 1280px before upload. */
-      const renderTargetBytes = 80 * 1024 * 1024;
-      const renderTotalBitrate = Math.min(10000000, Math.max(4500000, Math.floor(renderTargetBytes * 8 / renderTotalDuration)));
-      const renderAudioBitrate = 128000;
-      const renderVideoBitrate = Math.max(4000000, renderTotalBitrate - renderAudioBitrate);
-      const maxEdge = renderVideoBitrate >= 6000000 ? 1920 : 1280;
+      /* This is an upload mezzanine, not the final playback file. Keep enough
+         detail for the server encoder without uploading a 6-8 Mbps render. */
+      const renderTargetBytes = 18 * 1024 * 1024;
+      const renderTotalBitrate = Math.min(3000000, Math.max(900000, Math.floor(renderTargetBytes * 8 / renderTotalDuration)));
+      const renderAudioBitrate = renderTotalBitrate >= 1400000 ? 96000 : 64000;
+      const renderVideoBitrate = Math.max(800000, renderTotalBitrate - renderAudioBitrate);
+      const maxEdge = renderVideoBitrate >= 2000000 ? 1280 : 960;
       const scale = Math.min(1, maxEdge / Math.max(videoA.videoWidth, videoA.videoHeight));
       const canvas = document.createElement('canvas');
       canvas.width = Math.max(2, Math.round(videoA.videoWidth * scale / 2) * 2);
