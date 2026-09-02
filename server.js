@@ -5978,25 +5978,46 @@ app.get('/api/reels/:reelId/video', requireApiAuth, async (request, response) =>
       return false;
     };
     if(await tryVariants())return;
-    /* Native Android playback must never receive an arbitrary source upload.
-       Generate H.264/yuv420p/AAC variants on demand and keep the established
-       503 retry behavior if the compatibility ladder is not ready yet. */
+    /* Native Reel startup must never block the request while FFmpeg builds the
+       quality ladder. Start the encode in the background, then immediately use
+       the already-uploaded source when it is in an Android-friendly container.
+       This matches the fast startup path used by Home/Profile instead of holding
+       a black Reel screen for up to 12 seconds. */
     if(nativePlayback){
+      ensureReelVariants(reelId).catch(error=>console.error('Native Reel compatibility encode failed:',reelId,error.message));
       try{
-        /* Start/attach to the serialized encode job, but do not wait for the
-           entire four-rendition ladder. Poll briefly and return as soon as the
-           startup rendition has been committed. */
-        ensureReelVariants(reelId).catch(error=>console.error('Native Reel compatibility encode failed:',reelId,error.message));
-        const deadline=Date.now()+12000;
-        while(Date.now()<deadline){
-          if(await tryVariants())return;
-          await new Promise(resolve=>setTimeout(resolve,250));
+        const sourceMeta=await pool.query(
+          `SELECT mime_type FROM reel_video_variants WHERE reel_id=$1 AND variant='source' LIMIT 1`,
+          [reelId]
+        );
+        const sourceMime=String(sourceMeta.rows[0]?.mime_type||'').toLowerCase().split(';')[0];
+        const androidFriendlyContainer=/^video\/(mp4|x-m4v|3gpp)$/i.test(sourceMime);
+        if(androidFriendlyContainer && await sendReelVariantRange(request,response,reelId,'source'))return;
+        const legacySource=await reelLegacySource(reelId);
+        const legacyMime=String(legacySource?.mimeType||'').toLowerCase().split(';')[0];
+        if(legacySource && /^video\/(mp4|x-m4v|3gpp)$/i.test(legacyMime)){
+          if(legacySource.path){
+            return streamFileRange(
+              request,response,legacySource.path,legacyMime,
+              'private, max-age=31536000, immutable',
+              `reel-${reelId}-native-source`
+            );
+          }
+          if(legacySource.bytes){
+            return sendBufferRange(
+              request,response,legacySource.bytes,legacyMime,
+              'private, max-age=31536000, immutable'
+            );
+          }
         }
-        console.error('Native Reel startup rendition was not ready in time:',reelId);
-      }catch(error){console.error('Native Reel compatibility encode failed:',reelId,error.message);}
+      }catch(error){
+        console.error('Native Reel immediate source fallback failed:',reelId,error.message);
+      }
+      /* Unsupported source containers still use the compatibility encoder, but
+         return immediately so one Reel request cannot tie up the API server. */
       response.setHeader('Cache-Control','no-store');
-      response.setHeader('Retry-After','3');
-      return response.status(503).json({error:'Android-compatible Reel video is not ready yet.',code:'REEL_VARIANT_UNAVAILABLE',retryable:true});
+      response.setHeader('Retry-After','1');
+      return response.status(503).json({error:'Android-compatible Reel video is preparing.',code:'REEL_VARIANT_UNAVAILABLE',retryable:true});
     }
     if(await sendReelVariantRange(request,response,reelId,'source'))return;
     const source=await reelLegacySource(reelId);
