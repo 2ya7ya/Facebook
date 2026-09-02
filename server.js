@@ -1468,19 +1468,29 @@ async function transcodeReelFile(reelId, inputPath, sourceMimeType) {
     const ffmpeg = ffmpegBinary();
     /* Encode sequentially. Running two x264 outputs in one filter graph can
        exceed the 512 MB production worker limit and leave source-only reels. */
+    /* Meta publicly describes Reels as an adaptive-bitrate pipeline: keep a
+       high-quality upload/master, generate multiple resolutions, and select an
+       efficient quality point instead of forcing every video into one tiny
+       fixed bitrate. We use a two-rendition AVC ladder here because this app
+       currently exposes only `high` and `low`, but the encoding strategy is
+       quality-targeted (CRF + sensible VBV caps) rather than 320/720 kbps CBR.
+       Portrait Reels may retain up to 1080x1920; landscape clips up to
+       1920x1080. We never upscale smaller uploads. */
+    const lowScale = "scale=w='if(gte(iw,ih),min(960,iw),min(540,iw))':h='if(gte(iw,ih),min(540,ih),min(960,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2";
+    const highScale = "scale=w='if(gte(iw,ih),min(1920,iw),min(1080,iw))':h='if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2";
     await runProcess(ffmpeg, [
       '-hide_banner','-loglevel','error','-y','-i',inputPath,
-      '-map','0:v:0','-map','0:a:0?','-vf',"scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-      '-c:v','libx264','-preset','veryfast','-profile:v','main','-level:v','4.0','-pix_fmt','yuv420p','-tag:v','avc1',
-      '-b:v','320k','-maxrate','420k','-bufsize','840k','-force_key_frames','expr:gte(t,n_forced*2)',
-      '-c:a','aac','-ar','48000','-b:a','64k','-ac','2','-movflags','+faststart', lowPath
+      '-map','0:v:0','-map','0:a:0?','-vf',lowScale,
+      '-c:v','libx264','-preset','fast','-profile:v','main','-level:v','4.0','-pix_fmt','yuv420p','-tag:v','avc1',
+      '-crf','23','-maxrate','1800k','-bufsize','3600k','-force_key_frames','expr:gte(t,n_forced*2)',
+      '-c:a','aac','-ar','48000','-b:a','96k','-ac','2','-movflags','+faststart', lowPath
     ]);
     await runProcess(ffmpeg, [
       '-hide_banner','-loglevel','error','-y','-i',inputPath,
-      '-map','0:v:0','-map','0:a:0?','-vf',"scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-      '-c:v','libx264','-preset','veryfast','-profile:v','main','-level:v','4.0','-pix_fmt','yuv420p','-tag:v','avc1',
-      '-b:v','720k','-maxrate','900k','-bufsize','1800k','-force_key_frames','expr:gte(t,n_forced*2)',
-      '-c:a','aac','-ar','48000','-b:a','96k','-ac','2','-movflags','+faststart', highPath
+      '-map','0:v:0','-map','0:a:0?','-vf',highScale,
+      '-c:v','libx264','-preset','fast','-profile:v','high','-level:v','4.2','-pix_fmt','yuv420p','-tag:v','avc1',
+      '-crf','18','-maxrate','8000k','-bufsize','16000k','-force_key_frames','expr:gte(t,n_forced*2)',
+      '-c:a','aac','-ar','48000','-b:a','128k','-ac','2','-movflags','+faststart', highPath
     ]);
     await runProcess(ffmpeg, [
       '-hide_banner','-loglevel','error','-y','-ss','0.15','-i',lowPath,
@@ -1500,7 +1510,9 @@ async function transcodeReelFile(reelId, inputPath, sourceMimeType) {
          ON CONFLICT (reel_id) DO UPDATE SET mime_type=EXCLUDED.mime_type,image_data=EXCLUDED.image_data,created_at=NOW()`,
         [reelId, thumb]
       );
-      await client.query(`DELETE FROM reel_video_variants WHERE reel_id=$1 AND variant='source'`, [reelId]);
+      /* Keep the uploaded source as a mezzanine/master. This allows future
+         higher-quality or new-codec encodes without generationally recompressing
+         an already-compressed playback rendition. */
       await client.query(`UPDATE reels SET mime_type='video/mp4', video_data=NULL WHERE id=$1`, [reelId]);
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
