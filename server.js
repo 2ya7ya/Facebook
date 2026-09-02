@@ -14,6 +14,8 @@ const scrypt = promisify(crypto.scrypt);
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const publicDirectory = path.join(__dirname, 'upload');
+const reelMediaRoot = path.resolve(process.env.REEL_MEDIA_DIR || path.join(__dirname, '..', 'facebook-media', 'reels'));
+const reelFfmpegThreads = Math.max(1, Math.min(4, Number(process.env.REEL_FFMPEG_THREADS || 2) || 2));
 const authSecret = process.env.AUTH_SECRET || crypto
   .createHash('sha256')
   .update(`facebook-session:${process.env.DATABASE_URL || 'local-development'}`)
@@ -604,11 +606,14 @@ async function ensureDatabase() {
       variant VARCHAR(16) NOT NULL CHECK (variant IN ('source','low','high','360','480','720','1080')),
       mime_type VARCHAR(80) NOT NULL DEFAULT 'video/mp4',
       byte_length INTEGER NOT NULL DEFAULT 0,
-      video_data BYTEA NOT NULL,
+      storage_path TEXT,
+      video_data BYTEA,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (reel_id, variant)
     )
   `);
+  await pool.query('ALTER TABLE reel_video_variants ADD COLUMN IF NOT EXISTS storage_path TEXT');
+  await pool.query('ALTER TABLE reel_video_variants ALTER COLUMN video_data DROP NOT NULL');
   /* Expand the legacy low/high constraint in-place. Existing rows remain valid,
      and old app versions can continue requesting low/high aliases. */
   await pool.query('ALTER TABLE reel_video_variants DROP CONSTRAINT IF EXISTS reel_video_variants_variant_check');
@@ -617,10 +622,13 @@ async function ensureDatabase() {
     CREATE TABLE IF NOT EXISTS reel_thumbnails (
       reel_id BIGINT PRIMARY KEY REFERENCES reels(id) ON DELETE CASCADE,
       mime_type VARCHAR(80) NOT NULL DEFAULT 'image/jpeg',
-      image_data BYTEA NOT NULL,
+      storage_path TEXT,
+      image_data BYTEA,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query('ALTER TABLE reel_thumbnails ADD COLUMN IF NOT EXISTS storage_path TEXT');
+  await pool.query('ALTER TABLE reel_thumbnails ALTER COLUMN image_data DROP NOT NULL');
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reel_upload_sessions (
       id VARCHAR(64) PRIMARY KEY,
@@ -1380,6 +1388,181 @@ function sendBufferRange(request, response, bytes, mimeType, cacheControl) {
   response.end(bytes);
 }
 
+
+function safeReelId(value) {
+  const id = String(value || '');
+  if (!/^\d+$/.test(id)) throw new Error('Invalid Reel media id.');
+  return id;
+}
+
+function reelMimeExtension(mimeType, fallback) {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('webm')) return '.webm';
+  if (mime.includes('quicktime')) return '.mov';
+  if (mime.includes('3gpp')) return '.3gp';
+  if (mime.includes('mpeg')) return '.mpeg';
+  if (mime.includes('ogg')) return '.ogv';
+  return fallback || '.mp4';
+}
+
+function reelVariantStoragePath(reelId, variant, mimeType) {
+  const id = safeReelId(reelId);
+  const safeVariant = String(variant || '').replace(/[^a-z0-9_-]/gi, '');
+  if (!safeVariant) throw new Error('Invalid Reel media variant.');
+  const ext = safeVariant === 'source' ? reelMimeExtension(mimeType, '.mp4') : '.mp4';
+  return path.join(id, safeVariant + ext);
+}
+
+function reelThumbnailStoragePath(reelId, mimeType) {
+  const id = safeReelId(reelId);
+  const mime = String(mimeType || '').toLowerCase();
+  const ext = mime.includes('png') ? '.png' : (mime.includes('webp') ? '.webp' : '.jpg');
+  return path.join(id, 'thumbnail' + ext);
+}
+
+function absoluteReelMediaPath(relativePath) {
+  if (!relativePath) return '';
+  const absolute = path.resolve(reelMediaRoot, String(relativePath));
+  const rootPrefix = reelMediaRoot.endsWith(path.sep) ? reelMediaRoot : reelMediaRoot + path.sep;
+  if (absolute !== reelMediaRoot && !absolute.startsWith(rootPrefix)) throw new Error('Unsafe Reel media path.');
+  return absolute;
+}
+
+async function atomicWriteReelFile(relativePath, bytes) {
+  const destination = absoluteReelMediaPath(relativePath);
+  await fs.promises.mkdir(path.dirname(destination), { recursive:true });
+  const temporary = destination + '.tmp-' + crypto.randomBytes(8).toString('hex');
+  try {
+    await fs.promises.writeFile(temporary, bytes, { flag:'wx' });
+    await fs.promises.rename(temporary, destination);
+    return destination;
+  } finally {
+    await fs.promises.rm(temporary, { force:true }).catch(()=>{});
+  }
+}
+
+async function commitEncodedReelFile(reelId, variant, mimeType, temporaryPath) {
+  const relativePath = reelVariantStoragePath(reelId, variant, mimeType);
+  const destination = absoluteReelMediaPath(relativePath);
+  await fs.promises.mkdir(path.dirname(destination), { recursive:true });
+  const staged = destination + '.tmp-' + crypto.randomBytes(8).toString('hex');
+  try {
+    await fs.promises.copyFile(temporaryPath, staged);
+    await fs.promises.rename(staged, destination);
+    const stat = await fs.promises.stat(destination);
+    try {
+      const result = await pool.query(
+        `INSERT INTO reel_video_variants (reel_id,variant,mime_type,byte_length,storage_path,video_data)
+         VALUES ($1,$2,$3,$4,$5,NULL)
+         ON CONFLICT (reel_id,variant) DO UPDATE
+           SET mime_type=EXCLUDED.mime_type,byte_length=EXCLUDED.byte_length,storage_path=EXCLUDED.storage_path,video_data=NULL,created_at=NOW()`,
+        [reelId,variant,mimeType || 'video/mp4',stat.size,relativePath]
+      );
+      return stat.size;
+    } catch (error) {
+      if (error && error.code === '23503') {
+        await fs.promises.rm(destination,{force:true}).catch(()=>{});
+        return 0;
+      }
+      throw error;
+    }
+  } finally {
+    await fs.promises.rm(staged,{force:true}).catch(()=>{});
+  }
+}
+
+
+async function adoptReelVariantFile(queryable,reelId,variant,mimeType,sourcePath) {
+  const relativePath=reelVariantStoragePath(reelId,variant,mimeType);
+  const destination=absoluteReelMediaPath(relativePath);
+  await fs.promises.mkdir(path.dirname(destination),{recursive:true});
+  try{
+    await fs.promises.rename(sourcePath,destination);
+  }catch(error){
+    if(!error||error.code!=='EXDEV')throw error;
+    await fs.promises.copyFile(sourcePath,destination);
+    await fs.promises.rm(sourcePath,{force:true});
+  }
+  const stat=await fs.promises.stat(destination);
+  try{
+    await queryable.query(
+      `INSERT INTO reel_video_variants (reel_id,variant,mime_type,byte_length,storage_path,video_data)
+       VALUES ($1,$2,$3,$4,$5,NULL)
+       ON CONFLICT (reel_id,variant) DO UPDATE
+         SET mime_type=EXCLUDED.mime_type,byte_length=EXCLUDED.byte_length,storage_path=EXCLUDED.storage_path,video_data=NULL,created_at=NOW()`,
+      [reelId,variant,mimeType||'video/mp4',stat.size,relativePath]
+    );
+    return stat.size;
+  }catch(error){
+    await fs.promises.rm(destination,{force:true}).catch(()=>{});
+    throw error;
+  }
+}
+
+async function storeReelThumbnail(queryable, reelId, mimeType, bytes) {
+  const relativePath = reelThumbnailStoragePath(reelId, mimeType);
+  await atomicWriteReelFile(relativePath, bytes);
+  try {
+    await queryable.query(
+      `INSERT INTO reel_thumbnails (reel_id,mime_type,storage_path,image_data)
+       VALUES ($1,$2,$3,NULL)
+       ON CONFLICT (reel_id) DO UPDATE SET mime_type=EXCLUDED.mime_type,storage_path=EXCLUDED.storage_path,image_data=NULL,created_at=NOW()`,
+      [reelId,mimeType || 'image/jpeg',relativePath]
+    );
+  } catch (error) {
+    await fs.promises.rm(absoluteReelMediaPath(relativePath),{force:true}).catch(()=>{});
+    throw error;
+  }
+}
+
+async function streamFileRange(request,response,filePath,mimeType,cacheControl,etagSeed,createdAt) {
+  const stat = await fs.promises.stat(filePath);
+  const total = stat.size;
+  const lastModified = createdAt ? new Date(createdAt) : stat.mtime;
+  const etag = `"${etagSeed}-${total}-${Math.floor(lastModified.getTime())}"`;
+  response.setHeader('Accept-Ranges','bytes');
+  response.setHeader('Cache-Control',cacheControl || 'private, max-age=31536000, immutable');
+  response.setHeader('ETag',etag);
+  response.setHeader('Last-Modified',lastModified.toUTCString());
+  if (!request.headers.range && String(request.headers['if-none-match'] || '') === etag) {
+    response.status(304).end();
+    return true;
+  }
+  const range = String(request.headers.range || '');
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(range);
+  let start=0,end=total-1,status=200;
+  if (match && total > 0) {
+    start = match[1] ? Math.max(0, Number(match[1])) : 0;
+    end = match[2] ? Math.min(total-1, Number(match[2])) : total-1;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= total) {
+      response.setHeader('Content-Range',`bytes */${total}`);
+      response.status(416).end();
+      return true;
+    }
+    status=206;
+    response.setHeader('Content-Range',`bytes ${start}-${end}/${total}`);
+  }
+  response.status(status);
+  response.setHeader('Content-Type',mimeType || 'application/octet-stream');
+  response.setHeader('Content-Length',Math.max(0,end-start+1));
+  await new Promise((resolve,reject)=>{
+    const stream=fs.createReadStream(filePath,{start,end});
+    stream.once('error',reject);
+    response.once('close',()=>{try{stream.destroy();}catch(_){} resolve();});
+    response.once('finish',resolve);
+    stream.pipe(response);
+  });
+  return true;
+}
+
+async function removeReelMediaDirectory(reelId) {
+  try {
+    await fs.promises.rm(path.join(reelMediaRoot,safeReelId(reelId)),{recursive:true,force:true});
+  } catch (error) {
+    console.error('Reel media cleanup failed:',reelId,error.message);
+  }
+}
+
 async function reelViewerAccess(reelId, viewerId) {
   const result=await pool.query(`SELECT r.user_id,r.visibility,u.account_private,
     EXISTS(SELECT 1 FROM friendships f WHERE (f.user_one_id=$2 AND f.user_two_id=r.user_id) OR (f.user_one_id=r.user_id AND f.user_two_id=$2)) AS viewer_is_friend
@@ -1390,11 +1573,21 @@ async function reelViewerAccess(reelId, viewerId) {
 }
 
 async function sendReelVariantRange(request,response,reelId,variantName) {
-  const meta=await pool.query(`SELECT mime_type,byte_length,created_at FROM reel_video_variants WHERE reel_id=$1 AND variant=$2 LIMIT 1`,[reelId,variantName]);
+  const meta=await pool.query(`SELECT mime_type,byte_length,storage_path,created_at FROM reel_video_variants WHERE reel_id=$1 AND variant=$2 LIMIT 1`,[reelId,variantName]);
   if(!meta.rows[0])return false;
-  const total=Math.max(0,Number(meta.rows[0].byte_length)||0);
-  const mime=meta.rows[0].mime_type||'video/mp4';
-  const createdAt=meta.rows[0].created_at?new Date(meta.rows[0].created_at):null;
+  const row=meta.rows[0];
+  if(row.storage_path){
+    try{
+      const filePath=absoluteReelMediaPath(row.storage_path);
+      await fs.promises.access(filePath,fs.constants.R_OK);
+      return streamFileRange(request,response,filePath,row.mime_type||'video/mp4','private, max-age=31536000, immutable',`reel-${reelId}-${variantName}`,row.created_at);
+    }catch(error){
+      if(error && error.code!=='ENOENT')console.error('Reel filesystem read failed:',reelId,variantName,error.message);
+    }
+  }
+  const total=Math.max(0,Number(row.byte_length)||0);
+  const mime=row.mime_type||'video/mp4';
+  const createdAt=row.created_at?new Date(row.created_at):null;
   const versionStamp=createdAt&&Number.isFinite(createdAt.getTime())?createdAt.getTime():0;
   const etag=`"reel-${reelId}-${variantName}-${total}-${versionStamp}"`;
   response.setHeader('Accept-Ranges','bytes');
@@ -1409,11 +1602,11 @@ async function sendReelVariantRange(request,response,reelId,variantName) {
     if(!Number.isFinite(start)||!Number.isFinite(end)||start>end||start>=total){response.setHeader('Content-Range',`bytes */${total}`);response.status(416).end();return true;}
     const length=end-start+1;
     const chunk=await pool.query(`SELECT substring(video_data from $3 for $4) AS data FROM reel_video_variants WHERE reel_id=$1 AND variant=$2 LIMIT 1`,[reelId,variantName,start+1,length]);
-    if(!chunk.rows[0])return false;
+    if(!chunk.rows[0]||!chunk.rows[0].data)return false;
     response.status(206);response.setHeader('Content-Type',mime);response.setHeader('Content-Length',length);response.setHeader('Content-Range',`bytes ${start}-${end}/${total}`);response.end(chunk.rows[0].data);return true;
   }
   const full=await pool.query(`SELECT video_data FROM reel_video_variants WHERE reel_id=$1 AND variant=$2 LIMIT 1`,[reelId,variantName]);
-  if(!full.rows[0])return false;
+  if(!full.rows[0]||!full.rows[0].video_data)return false;
   response.setHeader('Content-Type',mime);response.setHeader('Content-Length',total||full.rows[0].video_data.length);response.end(full.rows[0].video_data);return true;
 }
 
@@ -1425,8 +1618,18 @@ const reelThumbnailWaiters = [];
 function acquireReelThumbnailSlot(){return new Promise(resolve=>{if(reelThumbnailActive<2){reelThumbnailActive+=1;resolve();}else reelThumbnailWaiters.push(resolve);});}
 function releaseReelThumbnailSlot(){reelThumbnailActive=Math.max(0,reelThumbnailActive-1);const next=reelThumbnailWaiters.shift();if(next){reelThumbnailActive+=1;next();}}
 async function reelLegacySource(reelId) {
-  const storedSource = await pool.query(`SELECT mime_type,video_data FROM reel_video_variants WHERE reel_id=$1 AND variant='source' LIMIT 1`,[reelId]);
-  if (storedSource.rows[0]) return { mimeType:storedSource.rows[0].mime_type || 'video/mp4', bytes:storedSource.rows[0].video_data, editData:{} };
+  const storedSource = await pool.query(`SELECT mime_type,storage_path,video_data FROM reel_video_variants WHERE reel_id=$1 AND variant='source' LIMIT 1`,[reelId]);
+  if (storedSource.rows[0]) {
+    const row=storedSource.rows[0];
+    if(row.storage_path){
+      try{
+        const filePath=absoluteReelMediaPath(row.storage_path);
+        await fs.promises.access(filePath,fs.constants.R_OK);
+        return {mimeType:row.mime_type||'video/mp4',path:filePath,bytes:null,editData:{}};
+      }catch(error){if(error&&error.code!=='ENOENT')throw error;}
+    }
+    if(row.video_data)return {mimeType:row.mime_type||'video/mp4',bytes:row.video_data,path:'',editData:{}};
+  }
   const result = await pool.query(
     `SELECT r.video_data, r.mime_type, r.source_post_id, r.source_media_index, r.edit_data,
             p.media_items, p.image_data
@@ -1438,9 +1641,6 @@ async function reelLegacySource(reelId) {
   let data = row.video_data || '';
   let mimeType = row.mime_type || '';
   if (row.source_post_id) {
-    /* source_media_index refers to the original post array. Normalizing the
-       whole array first can remove invalid/legacy entries and shift indexes,
-       making a valid linked Reel appear to have no source video. */
     const storedMedia = Array.isArray(row.media_items) ? row.media_items : [];
     const sourceItem = storedMedia[Number(row.source_media_index || 0)];
     const item = sourceItem ? normalizeStoredPostMedia([sourceItem], '')[0] : null;
@@ -1450,33 +1650,39 @@ async function reelLegacySource(reelId) {
     }
   }
   const decoded = dataUrlBuffer(data, 'video');
-  return decoded ? { ...decoded, editData: row.edit_data || {} } : null;
+  return decoded ? { ...decoded, path:'', editData: row.edit_data || {} } : null;
 }
 
 async function storeReelVariant(queryable, reelId, variant, mimeType, bytes) {
-  await queryable.query(
-    `INSERT INTO reel_video_variants (reel_id, variant, mime_type, byte_length, video_data)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (reel_id, variant) DO UPDATE
-       SET mime_type=EXCLUDED.mime_type, byte_length=EXCLUDED.byte_length, video_data=EXCLUDED.video_data, created_at=NOW()`,
-    [reelId, variant, mimeType || 'video/mp4', bytes.length, bytes]
-  );
+  const relativePath=reelVariantStoragePath(reelId,variant,mimeType);
+  await atomicWriteReelFile(relativePath,bytes);
+  try{
+    await queryable.query(
+      `INSERT INTO reel_video_variants (reel_id, variant, mime_type, byte_length, storage_path, video_data)
+       VALUES ($1,$2,$3,$4,$5,NULL)
+       ON CONFLICT (reel_id, variant) DO UPDATE
+         SET mime_type=EXCLUDED.mime_type, byte_length=EXCLUDED.byte_length, storage_path=EXCLUDED.storage_path, video_data=NULL, created_at=NOW()`,
+      [reelId, variant, mimeType || 'video/mp4', bytes.length, relativePath]
+    );
+  }catch(error){
+    await fs.promises.rm(absoluteReelMediaPath(relativePath),{force:true}).catch(()=>{});
+    throw error;
+  }
 }
 
 async function transcodeReelFile(reelId, inputPath, sourceMimeType) {
   const tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'facebook-reel-encode-'));
   const thumbPath = path.join(tempDirectory, 'thumb.jpg');
-  /* 720p is deliberately encoded first because the native Android Reel viewer
-     uses it as its startup rendition. Each completed rendition is committed
-     immediately, so playback does not wait for the entire ladder. */
   const ladder = [
     { variant:'720',  edge:1280, crf:'22', maxrate:'2800k', bufsize:'5600k', audio:'128k', profile:'main', level:'4.0' },
     { variant:'360',  edge:640,  crf:'24', maxrate:'650k',  bufsize:'1300k', audio:'64k',  profile:'main', level:'3.1' },
     { variant:'480',  edge:854,  crf:'23', maxrate:'1300k', bufsize:'2600k', audio:'96k',  profile:'main', level:'3.1' },
     { variant:'1080', edge:1920, crf:'20', maxrate:'5000k', bufsize:'10000k',audio:'128k', profile:'high', level:'4.2' }
   ];
-  const encoded = new Map();
+  const encoded = {};
   try {
+    const reelExists=await pool.query('SELECT 1 FROM reels WHERE id=$1 LIMIT 1',[reelId]);
+    if(!reelExists.rowCount)return encoded;
     const ffmpeg = ffmpegBinary();
     const existingResult = await pool.query(`SELECT variant FROM reel_video_variants WHERE reel_id=$1`, [reelId]);
     const existing = new Set(existingResult.rows.map(row => String(row.variant)));
@@ -1487,44 +1693,42 @@ async function transcodeReelFile(reelId, inputPath, sourceMimeType) {
         '-hide_banner','-loglevel','error','-y','-i',inputPath,
         '-map','0:v:0','-map','0:a:0?',
         '-vf',`scale=w='min(${item.edge},iw)':h='min(${item.edge},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`,
-        '-c:v','libx264','-preset','veryfast','-profile:v',item.profile,'-level:v',item.level,
+        '-c:v','libx264','-preset','veryfast','-threads',String(reelFfmpegThreads),'-profile:v',item.profile,'-level:v',item.level,
         '-pix_fmt','yuv420p','-tag:v','avc1','-crf',item.crf,'-maxrate',item.maxrate,'-bufsize',item.bufsize,
         '-force_key_frames','expr:gte(t,n_forced*2)',
         '-c:a','aac','-ar','48000','-b:a',item.audio,'-ac','2','-movflags','+faststart', outputPath
       ]);
-      const bytes = await fs.promises.readFile(outputPath);
-      encoded.set(item.variant, bytes);
-      /* Commit each rendition as soon as it is ready. If a later encode fails,
-         already completed renditions and the untouched source remain valid. */
-      await storeReelVariant(pool, reelId, item.variant, 'video/mp4', bytes);
+      const size=await commitEncodedReelFile(reelId,item.variant,'video/mp4',outputPath);
+      if(!size)break;
+      encoded[item.variant+'Bytes']=size;
     }
 
-    const have480 = await pool.query(`SELECT 1 FROM reel_video_variants WHERE reel_id=$1 AND variant='480' LIMIT 1`, [reelId]);
-    const thumbInput = have480.rowCount ? await (async()=>{
-      const r=await pool.query(`SELECT video_data FROM reel_video_variants WHERE reel_id=$1 AND variant='480' LIMIT 1`,[reelId]);
-      const f=path.join(tempDirectory,'thumb-source.mp4');await fs.promises.writeFile(f,r.rows[0].video_data);return f;
-    })() : inputPath;
+    const variant480=await pool.query(`SELECT storage_path FROM reel_video_variants WHERE reel_id=$1 AND variant='480' LIMIT 1`,[reelId]);
+    let thumbInput=inputPath;
+    if(variant480.rows[0]&&variant480.rows[0].storage_path){
+      try{
+        const candidate=absoluteReelMediaPath(variant480.rows[0].storage_path);
+        await fs.promises.access(candidate,fs.constants.R_OK);
+        thumbInput=candidate;
+      }catch(_error){}
+    }
     await runProcess(ffmpeg, [
       '-hide_banner','-loglevel','error','-y','-ss','0.15','-i',thumbInput,
       '-frames:v','1','-vf',"scale=w='min(360,iw)':h='min(640,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
       '-q:v','5',thumbPath
     ]);
     const thumb = await fs.promises.readFile(thumbPath);
-    await pool.query(
-      `INSERT INTO reel_thumbnails (reel_id,mime_type,image_data) VALUES ($1,'image/jpeg',$2)
-       ON CONFLICT (reel_id) DO UPDATE SET mime_type=EXCLUDED.mime_type,image_data=EXCLUDED.image_data,created_at=NOW()`,
-      [reelId, thumb]
-    );
+    await storeReelThumbnail(pool,reelId,'image/jpeg',thumb);
 
     const complete = await pool.query(`SELECT variant FROM reel_video_variants WHERE reel_id=$1 AND variant IN ('360','480','720','1080')`, [reelId]);
     const completed = new Set(complete.rows.map(row => String(row.variant)));
     if (['360','480','720','1080'].every(name => completed.has(name))) {
-      /* Only after the complete ladder and thumbnail exist is it safe to remove
-         the temporary source/legacy aliases. */
-      await pool.query(`DELETE FROM reel_video_variants WHERE reel_id=$1 AND variant IN ('source','low','high')`, [reelId]);
+      /* Keep the original filesystem master for future re-encoding. Only old
+         low/high aliases are retired after the complete ladder is available. */
+      await pool.query(`DELETE FROM reel_video_variants WHERE reel_id=$1 AND variant IN ('low','high')`, [reelId]);
       await pool.query(`UPDATE reels SET mime_type='video/mp4', video_data=NULL WHERE id=$1`, [reelId]);
     }
-    return Object.fromEntries([...encoded].map(([variant,bytes]) => [variant + 'Bytes', bytes.length]));
+    return encoded;
   } finally {
     await fs.promises.rm(tempDirectory, { recursive:true, force:true }).catch(()=>{});
   }
@@ -1541,9 +1745,10 @@ async function ensureReelVariants(reelId) {
   if (reelVariantJobs.has(String(reelId))) return reelVariantJobs.get(String(reelId));
   const task = async () => {
     const source = await reelLegacySource(reelId);
-    if (!source || !source.bytes.length) return false;
+    if (!source || (!source.path && !(source.bytes && source.bytes.length))) return false;
+    if(source.path){await transcodeReelFile(reelId,source.path,source.mimeType);return true;}
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'facebook-reel-source-'));
-    const ext = source.mimeType.includes('webm') ? '.webm' : (source.mimeType.includes('quicktime') ? '.mov' : '.mp4');
+    const ext = reelMimeExtension(source.mimeType,'.mp4');
     const input = path.join(dir, 'input' + ext);
     try { await fs.promises.writeFile(input, source.bytes); await transcodeReelFile(reelId, input, source.mimeType); return true; }
     finally { await fs.promises.rm(dir, { recursive:true, force:true }).catch(()=>{}); }
@@ -1555,38 +1760,46 @@ async function ensureReelVariants(reelId) {
 }
 
 async function ensureReelThumbnail(reelId) {
-  const existing = await pool.query('SELECT mime_type,image_data FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
-  if (existing.rows[0]) return existing.rows[0];
+  const existing = await pool.query('SELECT mime_type,storage_path,image_data FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
+  if (existing.rows[0]) {
+    const row=existing.rows[0];
+    if(row.storage_path){
+      try{
+        const filePath=absoluteReelMediaPath(row.storage_path);
+        await fs.promises.access(filePath,fs.constants.R_OK);
+        return {mime_type:row.mime_type||'image/jpeg',storage_path:row.storage_path,image_data:null};
+      }catch(error){if(error&&error.code!=='ENOENT')throw error;}
+    }
+    if(row.image_data)return row;
+  }
   if (reelThumbnailJobs.has(String(reelId))) return reelThumbnailJobs.get(String(reelId));
   const job=(async()=>{
     const legacy = await pool.query('SELECT edit_data FROM reels WHERE id=$1 LIMIT 1',[reelId]);
     const poster = legacy.rows[0] && legacy.rows[0].edit_data && legacy.rows[0].edit_data.previewPoster;
     const decodedPoster = dataUrlBuffer(poster, 'image');
     if (decodedPoster && decodedPoster.bytes.length) {
-      await pool.query(`INSERT INTO reel_thumbnails (reel_id,mime_type,image_data) VALUES ($1,$2,$3)
-        ON CONFLICT (reel_id) DO NOTHING`,[reelId,decodedPoster.mimeType,decodedPoster.bytes]);
-      return { mime_type:decodedPoster.mimeType,image_data:decodedPoster.bytes };
+      await storeReelThumbnail(pool,reelId,decodedPoster.mimeType,decodedPoster.bytes);
+      return { mime_type:decodedPoster.mimeType,storage_path:reelThumbnailStoragePath(reelId,decodedPoster.mimeType),image_data:null };
     }
     await acquireReelThumbnailSlot();
     let source=null;
     let dir='';
     try{
-      /* Acquire the bounded worker slot before reading a potentially large
-         legacy/source Reel into memory. Another encode job may have produced
-         the poster while this job was waiting, so check again first. */
-      const ready=await pool.query('SELECT mime_type,image_data FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
+      const ready=await pool.query('SELECT mime_type,storage_path,image_data FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
       if(ready.rows[0])return ready.rows[0];
       source=await reelLegacySource(reelId);
-      if(!source||!source.bytes.length)return null;
+      if(!source||(!source.path&&!(source.bytes&&source.bytes.length)))return null;
       dir=await fs.promises.mkdtemp(path.join(os.tmpdir(),'facebook-reel-thumb-'));
-      const input=path.join(dir,source.mimeType.includes('webm')?'input.webm':'input.mp4');
+      let input=source.path||'';
+      if(!input){
+        input=path.join(dir,'input'+reelMimeExtension(source.mimeType,'.mp4'));
+        await fs.promises.writeFile(input,source.bytes);
+      }
       const output=path.join(dir,'thumb.jpg');
-      await fs.promises.writeFile(input,source.bytes);
       await runProcess(ffmpegBinary(),['-hide_banner','-loglevel','error','-y','-ss','0.15','-i',input,'-frames:v','1','-vf',"scale=w='min(360,iw)':h='min(640,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-q:v','5',output]);
       const bytes=await fs.promises.readFile(output);
-      await pool.query(`INSERT INTO reel_thumbnails (reel_id,mime_type,image_data) VALUES ($1,'image/jpeg',$2)
-        ON CONFLICT (reel_id) DO NOTHING`,[reelId,bytes]);
-      return {mime_type:'image/jpeg',image_data:bytes};
+      await storeReelThumbnail(pool,reelId,'image/jpeg',bytes);
+      return {mime_type:'image/jpeg',storage_path:reelThumbnailStoragePath(reelId,'image/jpeg'),image_data:null};
     }finally{if(dir)await fs.promises.rm(dir,{recursive:true,force:true}).catch(()=>{});releaseReelThumbnailSlot();}
   })().finally(()=>reelThumbnailJobs.delete(String(reelId)));
   reelThumbnailJobs.set(String(reelId),job);
@@ -5709,9 +5922,18 @@ app.get('/api/reels/:reelId/thumbnail', requireApiAuth, async (request,response)
   try{
     await ensureDatabase();
     const access=await reelViewerAccess(reelId,request.user.id);if(!access.exists)return response.status(404).end();if(!access.allowed)return response.status(403).end();
-    const result=await pool.query('SELECT mime_type,image_data,created_at FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
-    const media=result.rows[0];
+    let result=await pool.query('SELECT mime_type,storage_path,image_data,created_at FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
+    let media=result.rows[0];
+    if(!media){await ensureReelThumbnail(reelId);result=await pool.query('SELECT mime_type,storage_path,image_data,created_at FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);media=result.rows[0];}
     if(!media)return response.status(404).end();
+    if(media.storage_path){
+      try{
+        const filePath=absoluteReelMediaPath(media.storage_path);
+        await fs.promises.access(filePath,fs.constants.R_OK);
+        return streamFileRange(request,response,filePath,media.mime_type||'image/jpeg','private, max-age=31536000, immutable',`reel-thumb-${reelId}`,media.created_at);
+      }catch(error){if(error&&error.code!=='ENOENT')throw error;}
+    }
+    if(!media.image_data)return response.status(404).end();
     const createdAt=media.created_at?new Date(media.created_at):null;
     const versionStamp=createdAt&&Number.isFinite(createdAt.getTime())?createdAt.getTime():0;
     const etag=`"reel-thumb-${reelId}-${media.image_data.length}-${versionStamp}"`;
@@ -5847,30 +6069,44 @@ app.post('/api/reel-uploads', requireApiAuth, async (request,response)=>{
   }catch(error){console.error('Reel upload init failed:',error.message);response.status(500).json({error:'Could not start the Reel upload.'});}
 });
 
-app.put('/api/reel-uploads/:uploadId', requireApiAuth, express.raw({type:['video/*','application/octet-stream'],limit:'60mb'}), async (request,response)=>{
+app.put('/api/reel-uploads/:uploadId', requireApiAuth, async (request,response)=>{
   const uploadId=String(request.params.uploadId||'');
   if(!/^[a-f0-9]{48}$/.test(uploadId))return response.status(400).json({error:'Invalid Reel upload.'});
-  const bytes=Buffer.isBuffer(request.body)?request.body:Buffer.from(request.body||'');
-  if(bytes.length<1024||bytes.length>60*1024*1024)return response.status(400).json({error:'The posted Reel must be 60 MB or smaller.'});
+  const incomingDirectory=path.join(reelMediaRoot,'_incoming');
+  const incomingPath=path.join(incomingDirectory,uploadId+'.upload');
+  let reelDirectory='';
   try{
     await ensureDatabase();
+    await fs.promises.mkdir(incomingDirectory,{recursive:true});
+    await fs.promises.rm(incomingPath,{force:true});
+    await receiveRequestToFile(request,incomingPath,60*1024*1024);
     const client=await pool.connect();
     try{
       await client.query('BEGIN');
       const sessionResult=await client.query('SELECT * FROM reel_upload_sessions WHERE id=$1 AND user_id=$2 AND expires_at>NOW() FOR UPDATE',[uploadId,request.user.id]);
       const session=sessionResult.rows[0];
-      if(!session){await client.query('ROLLBACK');return response.status(404).json({error:'This Reel upload expired. Try posting again.'});}
+      if(!session){await client.query('ROLLBACK');await fs.promises.rm(incomingPath,{force:true});return response.status(404).json({error:'This Reel upload expired. Try posting again.'});}
       const result=await client.query(`INSERT INTO reels (user_id,caption,video_data,mime_type,visibility,allow_comments,edit_data)
         VALUES ($1,$2,NULL,$3,$4,$5,$6) RETURNING id,user_id,caption,mime_type,visibility,allow_comments,edit_data,created_at`,
         [request.user.id,session.caption,session.mime_type,session.visibility,session.allow_comments,session.edit_data]);
       const reel=result.rows[0];
-      await storeReelVariant(client,reel.id,'source',session.mime_type,bytes);
+      reelDirectory=path.join(reelMediaRoot,String(reel.id));
+      await adoptReelVariantFile(client,reel.id,'source',session.mime_type,incomingPath);
       await client.query('DELETE FROM reel_upload_sessions WHERE id=$1',[uploadId]);
       await client.query('COMMIT');
       setImmediate(()=>ensureReelVariants(String(reel.id)).catch(error=>console.error('Reel compatibility encode failed:',reel.id,error.message)));
       response.status(201).json({ok:true,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),video1080:reelVideoUrl(reel.id,'1080'),video720:reelVideoUrl(reel.id,'720'),video480:reelVideoUrl(reel.id,'480'),video360:reelVideoUrl(reel.id,'360'),thumbnailUrl:reelThumbnailUrl(reel.id)}});
-    }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
-  }catch(error){console.error('Reel binary upload failed:',error.message);response.status(500).json({error:'Could not upload the Reel. Try again.'});}
+    }catch(error){
+      await client.query('ROLLBACK').catch(()=>{});
+      if(reelDirectory)await fs.promises.rm(reelDirectory,{recursive:true,force:true}).catch(()=>{});
+      throw error;
+    }finally{client.release();}
+  }catch(error){
+    await fs.promises.rm(incomingPath,{force:true}).catch(()=>{});
+    console.error('Reel binary upload failed:',error.message);
+    const status=Number(error&&error.statusCode)||500;
+    response.status(status).json({error:status===413?'The posted Reel must be 60 MB or smaller.':(status===400?'Choose a valid video.':'Could not upload the Reel. Try again.')});
+  }
 });
 
 app.put('/api/reels/:reelId/thumbnail', requireApiAuth, express.raw({type:'image/*',limit:'1mb'}), async (request,response)=>{
@@ -5884,8 +6120,7 @@ app.put('/api/reels/:reelId/thumbnail', requireApiAuth, express.raw({type:'image
     await ensureDatabase();
     const owner=await pool.query('SELECT id FROM reels WHERE id=$1 AND user_id=$2 LIMIT 1',[reelId,request.user.id]);
     if(!owner.rowCount)return response.status(404).json({error:'Reel not found.'});
-    await pool.query(`INSERT INTO reel_thumbnails (reel_id,mime_type,image_data) VALUES ($1,$2,$3)
-      ON CONFLICT (reel_id) DO UPDATE SET mime_type=EXCLUDED.mime_type,image_data=EXCLUDED.image_data,created_at=NOW()`,[reelId,mimeType,bytes]);
+    await storeReelThumbnail(pool,reelId,mimeType,bytes);
     response.status(204).end();
   }catch(error){console.error('Reel thumbnail upload failed:',error.message);response.status(500).json({error:'Could not save Reel thumbnail.'});}
 });
@@ -5929,9 +6164,7 @@ app.post('/api/reels', requireApiAuth, async (request, response) => {
     const reel=result.rows[0];
     await storeReelVariant(pool,reel.id,'source',mimeType,sourceBytes);
     if(thumbnailBytes){
-      await pool.query(`INSERT INTO reel_thumbnails (reel_id,mime_type,image_data) VALUES ($1,$2,$3)
-        ON CONFLICT (reel_id) DO UPDATE SET mime_type=EXCLUDED.mime_type,image_data=EXCLUDED.image_data,created_at=NOW()`,
-        [reel.id,thumbnailMimeType,thumbnailBytes]);
+      await storeReelThumbnail(pool,reel.id,thumbnailMimeType,thumbnailBytes);
     }
     sourceBytes=null;thumbnailBytes=null;
     setImmediate(()=>ensureReelVariants(String(reel.id)).catch(error=>console.error('Reel compatibility encode failed:',reel.id,error.message)));
@@ -6019,6 +6252,7 @@ app.delete('/api/reels/:reelId', requireApiAuth, async (request, response) => {
         const siblings = await client.query('SELECT id FROM reels WHERE source_post_id = $1 ORDER BY id', [row.source_post_id]);
         await client.query('DELETE FROM posts WHERE id = $1 AND user_id = $2', [row.source_post_id, request.user.id]);
         await client.query('COMMIT');
+        setImmediate(()=>Promise.all(siblings.rows.map(item=>removeReelMediaDirectory(item.id))));
         return response.json({
           ok: true,
           reelId: String(row.id),
@@ -6029,6 +6263,7 @@ app.delete('/api/reels/:reelId', requireApiAuth, async (request, response) => {
       await archiveReelForAdmin(client, reelId, request.user.id);
       await client.query('DELETE FROM reels WHERE id = $1 AND user_id = $2', [reelId, request.user.id]);
       await client.query('COMMIT');
+      setImmediate(()=>removeReelMediaDirectory(row.id));
       response.json({ ok: true, reelId: String(row.id), reelIds: [String(row.id)] });
     } catch (error) {
       await client.query('ROLLBACK');
