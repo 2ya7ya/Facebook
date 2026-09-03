@@ -4517,6 +4517,79 @@ function postFeedCursorDecode(value) {
   }
 }
 
+
+function lightweightPostExtras(extras, postId) {
+  const source = extras && typeof extras === 'object' && !Array.isArray(extras) ? extras : {};
+  const clean = JSON.parse(JSON.stringify(source));
+  if (clean.sound && typeof clean.sound === 'object') {
+    delete clean.sound.data;
+    delete clean.sound.coverData;
+    clean.sound.url = `/api/posts/${encodeURIComponent(String(postId))}/sound`;
+    if (source.sound && source.sound.coverData) {
+      clean.sound.coverUrl = `/api/posts/${encodeURIComponent(String(postId))}/sound/cover`;
+    }
+  }
+  return clean;
+}
+
+function postMediaMetadata(row, postId, sourceReelsByPost) {
+  const meta = Array.isArray(row.media_meta) ? row.media_meta : [];
+  const result = meta.map((item, index) => {
+    const type = String(item?.type || '').toLowerCase();
+    const mimeType = String(item?.mimeType || item?.mime_type || (type === 'video' ? 'video/mp4' : 'image/jpeg'));
+    if (type !== 'image' && type !== 'video') return null;
+    const output = {
+      type,
+      mimeType,
+      url: `/api/posts/${encodeURIComponent(String(postId))}/media/${index}`,
+      reelId: sourceReelsByPost.get(String(postId))?.get(index) || String(item?.reelId || ''),
+      contentKey: `post:${postId}:media:${index}`
+    };
+    if (type === 'video' && item?.editData && typeof item.editData === 'object') {
+      output.editData = stripHeavyReelEditData(item.editData);
+    }
+    return output;
+  }).filter(Boolean);
+
+  if (!result.length && row.has_legacy_image) {
+    result.push({
+      type: 'image',
+      mimeType: 'image/jpeg',
+      url: `/api/posts/${encodeURIComponent(String(postId))}/media/0`,
+      reelId: '',
+      contentKey: `post:${postId}:media:0`
+    });
+  }
+  return result;
+}
+
+async function loadViewablePostPayload(postId, viewerId, columns) {
+  if (!validNumericId(postId)) return null;
+  const result = await pool.query(
+    `SELECT ${columns}
+       FROM posts p
+       JOIN users u ON u.id = p.user_id
+      WHERE p.id = $1
+        AND (
+          p.user_id = $2
+          OR (
+            p.visibility <> 'only-me'
+            AND (
+              NOT COALESCE(u.account_private, FALSE)
+              OR EXISTS (
+                SELECT 1 FROM friendships f
+                 WHERE (f.user_one_id = $2 AND f.user_two_id = p.user_id)
+                    OR (f.user_one_id = p.user_id AND f.user_two_id = $2)
+              )
+            )
+          )
+        )
+      LIMIT 1`,
+    [postId, viewerId]
+  );
+  return result.rows[0] || null;
+}
+
 app.get('/api/posts', requireApiAuth, async (request, response) => {
   try {
     await ensureDatabase();
@@ -4527,7 +4600,22 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
     const requestedUserId = String(request.query.userId || '').trim();
     if (requestedUserId && !validNumericId(requestedUserId)) return response.status(400).json({ error: 'Invalid profile.' });
     const result = await pool.query(`
-      SELECT p.id, p.user_id, p.body, p.image_data, p.media_items, p.post_extras, p.visibility, p.created_at, u.full_name, u.profile_photo,
+      SELECT p.id, p.user_id, p.body,
+             (p.image_data IS NOT NULL AND p.image_data <> '') AS has_legacy_image,
+             COALESCE((
+               SELECT jsonb_agg(elem - 'data')
+                 FROM jsonb_array_elements(COALESCE(p.media_items, '[]'::jsonb)) elem
+             ), '[]'::jsonb) AS media_meta,
+             CASE WHEN COALESCE(p.post_extras, '{}'::jsonb) ? 'sound'
+                  THEN jsonb_set(
+                    COALESCE(p.post_extras, '{}'::jsonb),
+                    '{sound}',
+                    COALESCE(p.post_extras->'sound','{}'::jsonb) - 'data' - 'coverData',
+                    true
+                  )
+                  ELSE COALESCE(p.post_extras, '{}'::jsonb)
+             END AS post_extras,
+             p.visibility, p.created_at, u.full_name,
              (SELECT COUNT(*)::int FROM post_likes pl WHERE pl.post_id = p.id) AS like_count,
              (SELECT COUNT(*)::int FROM post_shares ps WHERE ps.post_id = p.id) AS share_count,
              EXISTS(SELECT 1 FROM post_likes mine WHERE mine.post_id = p.id AND mine.user_id = $1) AS liked_by_me
@@ -4563,8 +4651,10 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
       const ids = result.rows.map(row => String(row.id));
       const placeholders = ids.map((_id, index) => `$${index + 1}`).join(',');
       const commentResult = await pool.query(
-        `SELECT pc.id, pc.post_id, pc.user_id, pc.parent_comment_id, pc.body, pc.media_data, pc.media_type, pc.created_at,
-                u.full_name, u.profile_photo, parent_user.full_name AS reply_to_author
+        `SELECT pc.id, pc.post_id, pc.user_id, pc.parent_comment_id, pc.body,
+                CASE WHEN pc.media_type = 'sticker' THEN pc.media_data ELSE '' END AS media_data,
+                pc.media_type, pc.created_at,
+                u.full_name, parent_user.full_name AS reply_to_author
          FROM post_comments pc
          JOIN users u ON u.id = pc.user_id
          LEFT JOIN post_comments parent_comment ON parent_comment.id = pc.parent_comment_id
@@ -4580,10 +4670,12 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
           id: String(row.id),
           userId: String(row.user_id),
           author: row.full_name,
-          profilePhoto: avatarDeliveryUrl(row.user_id, row.profile_photo),
+          profilePhoto: `/api/users/${encodeURIComponent(String(row.user_id))}/avatar`,
           parentCommentId: row.parent_comment_id ? String(row.parent_comment_id) : null,
           replyToAuthor: row.reply_to_author || '',
-          mediaData: row.media_data || '',
+          mediaData: row.media_type === 'image'
+            ? `/api/posts/${encodeURIComponent(String(row.post_id))}/comments/${encodeURIComponent(String(row.id))}/media`
+            : (row.media_data || ''),
           mediaType: row.media_type || '',
           body: row.body,
           createdAt: row.created_at
@@ -4648,28 +4740,28 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
         sourceReelsByPost.get(key).set(Number(row.source_media_index), String(row.id));
       });
     }
-    const deliveredPosts = result.rows.map(row => ({
-      id: String(row.id),
-      userId: String(row.user_id),
-      body: row.body,
-      image: row.image_data || '',
-      contentKey: `post:${row.id}`,
-      media: normalizeStoredPostMedia(row.media_items, row.image_data || '').map((item, index) => ({
-        ...item,
-        reelId: sourceReelsByPost.get(String(row.id))?.get(index) || item.reelId || '',
-        contentKey: `post:${row.id}:media:${index}`
-      })),
-      extras: row.post_extras && typeof row.post_extras === 'object' ? row.post_extras : {},
-      visibility: row.visibility || 'public',
-      createdAt: row.created_at,
-      author: row.full_name,
-      profilePhoto: row.profile_photo || '',
-      likeCount: Number(row.like_count || 0),
-      shareCount: Number(row.share_count || 0),
-      likedByMe: Boolean(row.liked_by_me),
-      mediaStats: mediaStatsByPost.get(String(row.id)) || [],
-      comments: commentsByPost.get(String(row.id)) || []
-    }));
+    const deliveredPosts = result.rows.map(row => {
+      const media = postMediaMetadata(row, row.id, sourceReelsByPost);
+      const firstImage = media.find(item => item.type === 'image');
+      return {
+        id: String(row.id),
+        userId: String(row.user_id),
+        body: row.body,
+        image: firstImage?.url || '',
+        contentKey: `post:${row.id}`,
+        media,
+        extras: lightweightPostExtras(row.post_extras, row.id),
+        visibility: row.visibility || 'public',
+        createdAt: row.created_at,
+        author: row.full_name,
+        profilePhoto: `/api/users/${encodeURIComponent(String(row.user_id))}/avatar`,
+        likeCount: Number(row.like_count || 0),
+        shareCount: Number(row.share_count || 0),
+        likedByMe: Boolean(row.liked_by_me),
+        mediaStats: mediaStatsByPost.get(String(row.id)) || [],
+        comments: commentsByPost.get(String(row.id)) || []
+      };
+    });
     response.set('Cache-Control', 'private, no-store');
     response.json({
       posts: deliveredPosts,
@@ -4678,6 +4770,87 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
   } catch (error) {
     console.error('Posts load failed:', error.message);
     response.status(500).json({ error: 'Could not load posts.' });
+  }
+});
+
+
+app.get('/api/posts/:postId/media/:mediaIndex', requireApiAuth, async (request, response) => {
+  const postId = request.params.postId;
+  const mediaIndex = Number(request.params.mediaIndex);
+  if (!validNumericId(postId) || !Number.isInteger(mediaIndex) || mediaIndex < 0 || mediaIndex > 9) return response.status(400).end();
+  try {
+    await ensureDatabase();
+    const row = await loadViewablePostPayload(postId, request.user.id, 'p.media_items, p.image_data');
+    if (!row) return response.status(404).end();
+    const media = normalizeStoredPostMedia(row.media_items, row.image_data || '');
+    const item = media[mediaIndex];
+    if (!item) return response.status(404).end();
+    const decoded = dataUrlBuffer(item.data, item.type === 'video' ? 'video' : 'image');
+    if (!decoded) return response.status(404).end();
+    return sendBufferRange(request, response, decoded.bytes, decoded.mimeType, 'private, max-age=31536000, immutable');
+  } catch (error) {
+    console.error('Post media load failed:', error.message);
+    return response.status(500).end();
+  }
+});
+
+app.get('/api/posts/:postId/sound', requireApiAuth, async (request, response) => {
+  const postId = request.params.postId;
+  if (!validNumericId(postId)) return response.status(400).end();
+  try {
+    await ensureDatabase();
+    const row = await loadViewablePostPayload(postId, request.user.id, 'p.post_extras');
+    if (!row) return response.status(404).end();
+    const data = String(row.post_extras?.sound?.data || '');
+    const match = data.match(/^data:(audio\/[a-z0-9.+-]+)(?:;[^;]*)?;base64,([a-z0-9+/=\s]+)$/i);
+    if (!match) return response.status(404).end();
+    const bytes = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+    return sendBufferRange(request, response, bytes, match[1].toLowerCase(), 'private, max-age=31536000, immutable');
+  } catch (error) {
+    console.error('Post sound load failed:', error.message);
+    return response.status(500).end();
+  }
+});
+
+app.get('/api/posts/:postId/sound/cover', requireApiAuth, async (request, response) => {
+  const postId = request.params.postId;
+  if (!validNumericId(postId)) return response.status(400).end();
+  try {
+    await ensureDatabase();
+    const row = await loadViewablePostPayload(postId, request.user.id, 'p.post_extras');
+    if (!row) return response.status(404).end();
+    const decoded = dataUrlBuffer(String(row.post_extras?.sound?.coverData || ''), 'image');
+    if (!decoded) return response.status(404).end();
+    return sendBufferRange(request, response, decoded.bytes, decoded.mimeType, 'private, max-age=31536000, immutable');
+  } catch (error) {
+    console.error('Post sound cover load failed:', error.message);
+    return response.status(500).end();
+  }
+});
+
+app.get('/api/posts/:postId/comments/:commentId/media', requireApiAuth, async (request, response) => {
+  const postId = request.params.postId;
+  const commentId = request.params.commentId;
+  if (!validNumericId(postId) || !validNumericId(commentId)) return response.status(400).end();
+  try {
+    await ensureDatabase();
+    const post = await loadViewablePostPayload(postId, request.user.id, 'p.id');
+    if (!post) return response.status(404).end();
+    const result = await pool.query(
+      `SELECT media_data, media_type
+         FROM post_comments
+        WHERE id = $1 AND post_id = $2
+        LIMIT 1`,
+      [commentId, postId]
+    );
+    const row = result.rows[0];
+    if (!row || row.media_type !== 'image') return response.status(404).end();
+    const decoded = dataUrlBuffer(String(row.media_data || ''), 'image');
+    if (!decoded) return response.status(404).end();
+    return sendBufferRange(request, response, decoded.bytes, decoded.mimeType, 'private, max-age=31536000, immutable');
+  } catch (error) {
+    console.error('Post comment media load failed:', error.message);
+    return response.status(500).end();
   }
 });
 
