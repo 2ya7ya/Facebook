@@ -67,6 +67,7 @@ let authDatabaseReadyPromise = null;
 let databaseReady = false;
 let databaseReadyPromise = null;
 let videoBackfillStarted = false;
+let reelThumbnailBackfillStarted = false;
 let userAuthColumns = new Set();
 let legacyPasswordColumn = '';
 let legacyIdentifierColumns = [];
@@ -751,6 +752,7 @@ async function ensureDatabase() {
   `);
     databaseReady = true;
     schedulePostVideoBackfill();
+    scheduleReelThumbnailBackfill();
   })();
   try {
     await databaseReadyPromise;
@@ -785,6 +787,35 @@ async function createMentionNotifications(client, actorId, body, postId, comment
   for (const row of mentioned.rows) {
     await createNotification(client, { userId: row.id, actorId, type: 'mention', postId, detail: text, commentId });
   }
+}
+
+function scheduleReelThumbnailBackfill() {
+  if (reelThumbnailBackfillStarted || !pool) return;
+  reelThumbnailBackfillStarted = true;
+  setTimeout(async () => {
+    try {
+      const result = await pool.query(`
+        SELECT r.id
+          FROM reels r
+         WHERE NOT EXISTS (
+           SELECT 1 FROM reel_thumbnails t WHERE t.reel_id = r.id
+         )
+         ORDER BY r.created_at DESC, r.id DESC
+         LIMIT 24
+      `);
+      for (const row of result.rows) {
+        try {
+          await ensureReelThumbnail(row.id);
+        } catch (error) {
+          console.warn('Reel thumbnail backfill skipped', row.id, error.message);
+        }
+      }
+      if (result.rowCount) console.log(`Reel thumbnail backfill complete: ${result.rowCount}`);
+    } catch (error) {
+      reelThumbnailBackfillStarted = false;
+      console.error('Reel thumbnail backfill failed:', error.message);
+    }
+  }, 2500);
 }
 
 function schedulePostVideoBackfill() {
@@ -6026,8 +6057,13 @@ app.get('/api/reels/:reelId/thumbnail', requireApiAuth, async (request,response)
     await ensureDatabase();
     const access=await reelViewerAccess(reelId,request.user.id);if(!access.exists)return response.status(404).end();if(!access.allowed)return response.status(403).end();
     const result=await pool.query('SELECT mime_type,image_data,created_at FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
-    const media=result.rows[0];
-    if(!media)return response.status(404).end();
+    let media=result.rows[0];
+    if(!media){
+      const generated=await ensureReelThumbnail(reelId);
+      if(!generated)return response.status(404).end();
+      const ready=await pool.query('SELECT mime_type,image_data,created_at FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
+      media=ready.rows[0]||generated;
+    }
     const createdAt=media.created_at?new Date(media.created_at):null;
     const versionStamp=createdAt&&Number.isFinite(createdAt.getTime())?createdAt.getTime():0;
     const etag=`"reel-thumb-${reelId}-${media.image_data.length}-${versionStamp}"`;
@@ -6166,6 +6202,7 @@ app.put('/api/reel-uploads/:uploadId', requireApiAuth, express.raw({type:['video
       await client.query('DELETE FROM reel_upload_sessions WHERE id=$1',[uploadId]);
       await client.query('COMMIT');
       response.status(201).json({ok:true,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),thumbnailUrl:reelThumbnailUrl(reel.id),hlsReady:false,hls:''}});
+      ensureReelThumbnail(reel.id).catch(error=>console.warn('Reel thumbnail generation failed:',reel.id,error.message));
       ensureReelHls(reel.id).catch(()=>{});
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   }catch(error){console.error('Reel binary upload failed:',error.message);response.status(500).json({error:'Could not upload the Reel. Try again.'});}
@@ -6233,6 +6270,7 @@ app.post('/api/reels', requireApiAuth, async (request, response) => {
     }
     sourceBytes=null;thumbnailBytes=null;
     response.status(201).json({ok:true,processing:false,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),thumbnailUrl:reelThumbnailUrl(reel.id),hlsReady:false,hls:''}});
+    ensureReelThumbnail(reel.id).catch(error=>console.warn('Reel thumbnail generation failed:',reel.id,error.message));
     ensureReelHls(reel.id).catch(()=>{});
   }catch(error){console.error('Reel creation failed:',error);response.status(500).json({error:'Could not publish the reel.'});}
 });
