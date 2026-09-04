@@ -4447,10 +4447,14 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
       id: String(row.id),
       userId: String(row.user_id),
       body: row.body,
-      image: row.image_data || '',
+      image: '',
       contentKey: `post:${row.id}`,
       media: normalizeStoredPostMedia(row.media_items, row.image_data || '').map((item, index) => ({
-        ...item,
+        type: item.type || '',
+        mimeType: item.mimeType || '',
+        name: item.name || '',
+        url: `/api/posts/${encodeURIComponent(String(row.id))}/media/${index}`,
+        ...(item.editData && typeof item.editData === 'object' ? { editData: item.editData } : {}),
         reelId: sourceReelsByPost.get(String(row.id))?.get(index) || item.reelId || '',
         contentKey: `post:${row.id}:media:${index}`
       })),
@@ -4816,6 +4820,63 @@ app.delete('/api/posts/:postId/comments/:commentId', requireApiAuth, async (requ
   } catch (error) {
     console.error('Post comment delete failed:', error.message);
     response.status(500).json({ error:'Could not delete the comment.' });
+  }
+});
+
+app.get('/api/posts/:postId/media/:mediaIndex', requireApiAuth, async (request, response) => {
+  const postId = request.params.postId;
+  const mediaIndex = Number(request.params.mediaIndex);
+  if (!validNumericId(postId) || !Number.isInteger(mediaIndex) || mediaIndex < 0) {
+    return response.status(400).json({ error: 'Invalid post media.' });
+  }
+  try {
+    await ensureDatabase();
+    const result = await pool.query(
+      `SELECT p.user_id, p.visibility, p.media_items, p.image_data, u.account_private
+         FROM posts p
+         JOIN users u ON u.id = p.user_id
+        WHERE p.id = $1
+        LIMIT 1`,
+      [postId]
+    );
+    const row = result.rows[0];
+    if (!row) return response.status(404).end();
+
+    let allowed = String(row.user_id) === String(request.user.id);
+    if (!allowed && String(row.visibility || 'public') !== 'only-me') {
+      if (!row.account_private) {
+        allowed = true;
+      } else {
+        const friendship = await pool.query(
+          `SELECT 1
+             FROM friendships
+            WHERE (user_one_id = $1 AND user_two_id = $2)
+               OR (user_one_id = $2 AND user_two_id = $1)
+            LIMIT 1`,
+          [request.user.id, row.user_id]
+        );
+        allowed = friendship.rowCount > 0;
+      }
+    }
+    if (!allowed) return response.status(403).end();
+
+    const media = normalizeStoredPostMedia(row.media_items, row.image_data || '');
+    const item = media[mediaIndex];
+    if (!item || !item.data) return response.status(404).end();
+
+    const decoded = dataUrlBuffer(item.data, item.type || '');
+    if (!decoded || !decoded.bytes || !decoded.bytes.length) return response.status(404).end();
+
+    return sendBufferRange(
+      request,
+      response,
+      decoded.bytes,
+      decoded.mimeType || item.mimeType || 'application/octet-stream',
+      'private, max-age=31536000, immutable'
+    );
+  } catch (error) {
+    console.error('Post media load failed:', error.message);
+    response.status(500).end();
   }
 });
 
