@@ -1093,6 +1093,14 @@ async function recordAdminAudit(request, targetUserId, action, details = {}) {
   );
 }
 
+const postVideoFileRoot = process.env.POST_VIDEO_FILE_ROOT || path.join(process.env.HOME || os.homedir(), 'facebook-media', 'post-videos');
+function postVideoUploadTokenOkay(value){return /^[a-f0-9-]{20,80}$/i.test(String(value||''));}
+function postVideoFileKey(userId,token){return `${String(userId)}/${String(token)}.bin`;}
+function postVideoMetaKey(userId,token){return `${String(userId)}/${String(token)}.json`;}
+function postVideoAbsolute(fileKey){const key=String(fileKey||'').replace(/\\/g,'/');if(!/^\d+\/[a-f0-9-]{20,80}\.(?:bin|json)$/i.test(key))return '';const resolved=path.resolve(postVideoFileRoot,key),root=path.resolve(postVideoFileRoot)+path.sep;return resolved.startsWith(root)?resolved:'';}
+function storedPostVideoFileOkay(item){if(!item||item.type!=='video'||item.storage!=='file')return false;const absolute=postVideoAbsolute(item.fileKey);if(!absolute)return false;try{const stat=fs.statSync(absolute);return stat.isFile()&&stat.size>0&&stat.size<=50*1024*1024;}catch(_error){return false;}}
+async function resolvePostMediaUploads(userId,value){if(!Array.isArray(value))return value;const resolved=[];for(const original of value){const item=original&&typeof original==='object'?{...original}:original;const token=String(item&&item.uploadToken||'');if(!token){resolved.push(item);continue;}if(!postVideoUploadTokenOkay(token))throw new Error('Invalid post video upload.');const metaPath=postVideoAbsolute(postVideoMetaKey(userId,token));if(!metaPath)throw new Error('Invalid post video upload.');let meta;try{meta=JSON.parse(await fs.promises.readFile(metaPath,'utf8'));}catch(_error){throw new Error('Post video upload expired.');}if(String(meta.userId)!==String(userId))throw new Error('Post video upload does not belong to this account.');const fileKey=postVideoFileKey(userId,token),absolute=postVideoAbsolute(fileKey);const stat=absolute?await fs.promises.stat(absolute).catch(()=>null):null;if(!stat||!stat.isFile()||stat.size<=0||stat.size>50*1024*1024)throw new Error('Post video upload is unavailable.');const mimeType=String(meta.mimeType||item.mimeType||'video/mp4').toLowerCase();if(!/^video\/[a-z0-9.+-]+$/i.test(mimeType))throw new Error('Choose a supported video.');resolved.push({type:'video',mimeType,storage:'file',fileKey,size:stat.size,name:String(meta.name||item.name||'video').slice(0,255),...(item.editData&&typeof item.editData==='object'?{editData:item.editData}:{})});}return resolved;}
+
 function validImageData(value) {
   if (value === null || value === undefined || value === '') return true;
   return typeof value === 'string' && value.length <= 8 * 1024 * 1024 && /^data:image\/(?:png|jpe?g|webp|gif|avif);base64,[a-z0-9+/=\s]+$/i.test(value);
@@ -1114,6 +1122,14 @@ function postMediaMimeType(data) {
 function normalizeStoredPostMedia(value, legacyImage = '') {
   const source = Array.isArray(value) ? value : [];
   const normalized = source.map((item) => {
+    if (item && item.storage === 'file' && item.type === 'video' && item.fileKey) {
+      const mimeType=String(item.mimeType||'video/mp4').toLowerCase();
+      if(!storedPostVideoFileOkay(item))return null;
+      const normalized={type:'video',mimeType,storage:'file',fileKey:String(item.fileKey),size:Number(item.size)||0};
+      if(item.editData&&typeof item.editData==='object')normalized.editData=normalizeReelEdits(item.editData);
+      if(item.reelId)normalized.reelId=String(item.reelId);
+      return normalized;
+    }
     const data = String(item && item.data || '');
     const mimeType = postMediaMimeType(data);
     const type = mimeType.startsWith('video/') ? 'video' : (mimeType.startsWith('image/') ? 'image' : '');
@@ -1135,6 +1151,14 @@ function validatePostMedia(value) {
   let encodedSize = 0;
   const media = [];
   for (const item of value) {
+    if(item&&item.type==='video'&&item.storage==='file'){
+      if(!storedPostVideoFileOkay(item))return {error:'The uploaded video is unavailable.'};
+      const mimeType=String(item.mimeType||'video/mp4').toLowerCase();
+      if(!/^video\/[a-z0-9.+-]+$/i.test(mimeType))return {error:'Choose a supported video.'};
+      const normalized={type:'video',mimeType,storage:'file',fileKey:String(item.fileKey),size:Number(item.size)||0};
+      if(item.editData&&typeof item.editData==='object')normalized.editData=normalizeReelEdits(item.editData);
+      media.push(normalized);encodedSize+=Math.min(Number(item.size)||0,50*1024*1024);continue;
+    }
     const data = String(item && item.data || '');
     const mimeType = postMediaMimeType(data);
     const type = mimeType.startsWith('video/') ? 'video' : (mimeType.startsWith('image/') ? 'image' : '');
@@ -1154,7 +1178,7 @@ function validatePostMedia(value) {
 async function syncPostVideoReels(queryable, { postId, userId, caption, visibility, createdAt, media }) {
   const videos = (Array.isArray(media) ? media : [])
     .map((item, index) => ({ item, index }))
-    .filter(({ item }) => item && item.type === 'video' && validVideoData(item.data));
+    .filter(({ item }) => item && item.type === 'video' && (validVideoData(item.data) || storedPostVideoFileOkay(item)));
   const keep = videos.map(({ index }) => index);
   if (keep.length) {
     await queryable.query(
@@ -1495,9 +1519,10 @@ async function reelLegacySource(reelId) {
   if (row.source_post_id) {
     const media = normalizeStoredPostMedia(row.media_items, row.image_data || '');
     const item = media[Number(row.source_media_index || 0)];
-    if (item && item.type === 'video' && item.data) {
-      data = item.data;
-      mimeType = item.mimeType || mimeType;
+    if(item&&item.type==='video'){
+      mimeType=item.mimeType||mimeType;
+      if(item.storage==='file'&&item.fileKey){const absolute=postVideoAbsolute(item.fileKey);if(absolute){const bytes=await fs.promises.readFile(absolute).catch(()=>null);if(bytes&&bytes.length)return {mimeType:mimeType||'video/mp4',bytes,editData:row.edit_data||{}};}}
+      if(item.data)data=item.data;
     }
   }
   const decoded = dataUrlBuffer(data, 'video');
@@ -4449,11 +4474,11 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
       body: row.body,
       image: row.image_data || '',
       contentKey: `post:${row.id}`,
-      media: normalizeStoredPostMedia(row.media_items, row.image_data || '').map((item, index) => ({
-        ...item,
-        reelId: sourceReelsByPost.get(String(row.id))?.get(index) || item.reelId || '',
-        contentKey: `post:${row.id}:media:${index}`
-      })),
+      media: normalizeStoredPostMedia(row.media_items, row.image_data || '').map((item, index) => {
+        const reelId=sourceReelsByPost.get(String(row.id))?.get(index)||item.reelId||'';
+        if(item.storage==='file')return {type:item.type,mimeType:item.mimeType,size:item.size||0,url:`/api/posts/${encodeURIComponent(String(row.id))}/media/${index}`,reelId,contentKey:`post:${row.id}:media:${index}`};
+        return {...item,reelId,contentKey:`post:${row.id}:media:${index}`};
+      }),
       extras: row.post_extras && typeof row.post_extras === 'object' ? row.post_extras : {},
       visibility: row.visibility || 'public',
       createdAt: row.created_at,
@@ -4471,13 +4496,24 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
   }
 });
 
+app.put('/api/post-media-uploads/:uploadToken', requireApiAuth, express.raw({type:['video/*','application/octet-stream'],limit:'52mb'}), async (request,response)=>{
+  const token=String(request.params.uploadToken||'');if(!postVideoUploadTokenOkay(token))return response.status(400).json({error:'Invalid upload token.'});
+  const bytes=Buffer.isBuffer(request.body)?request.body:Buffer.alloc(0);if(!bytes.length)return response.status(400).json({error:'Choose a video.'});if(bytes.length>50*1024*1024)return response.status(413).json({error:'Video must be 50 MB or smaller.'});
+  const mime=String(request.headers['x-file-type']||request.headers['content-type']||'video/mp4').split(';')[0].trim().toLowerCase();if(!/^video\/[a-z0-9.+-]+$/i.test(mime))return response.status(415).json({error:'Choose a supported video.'});
+  const filePath=postVideoAbsolute(postVideoFileKey(request.user.id,token)),metaPath=postVideoAbsolute(postVideoMetaKey(request.user.id,token));if(!filePath||!metaPath)return response.status(400).json({error:'Invalid upload path.'});
+  try{await fs.promises.mkdir(path.dirname(filePath),{recursive:true});const part=filePath+'.part';await fs.promises.writeFile(part,bytes);await fs.promises.rename(part,filePath);await fs.promises.writeFile(metaPath,JSON.stringify({userId:String(request.user.id),mimeType:mime,name:decodeURIComponent(String(request.headers['x-file-name']||'video')).slice(0,255),size:bytes.length,createdAt:Date.now()}));response.status(201).json({ok:true,uploadToken:token,type:'video',mimeType:mime,size:bytes.length});}
+  catch(error){console.error('Post video binary upload failed:',error.message);response.status(500).json({error:'Could not upload the video.'});}
+});
+
 app.post('/api/posts', requireApiAuth, async (request, response) => {
   const body = String(request.body?.body || '').trim();
   const visibility = String(request.body?.visibility || 'public').trim().toLowerCase();
   const mediaWasProvided = Object.prototype.hasOwnProperty.call(request.body || {}, 'media');
   const legacyImage = String(request.body?.image || '');
+  let incomingMedia=request.body?.media;
+  if(mediaWasProvided){try{incomingMedia=await resolvePostMediaUploads(request.user.id,incomingMedia);}catch(error){return response.status(400).json({error:error.message||'Could not use the uploaded video.'});}}
   const mediaResult = mediaWasProvided
-    ? validatePostMedia(request.body.media)
+    ? validatePostMedia(incomingMedia)
     : validatePostMedia(legacyImage ? [{ data: legacyImage }] : []);
   if (mediaResult.error) return response.status(400).json({ error: mediaResult.error });
   const media = mediaResult.media;
@@ -4516,11 +4552,11 @@ app.post('/api/posts', requireApiAuth, async (request, response) => {
     response.status(201).json({ ok: true, post: {
       ...post,
       contentKey: `post:${post.id}`,
-      media: normalizeStoredPostMedia(post.media_items, post.image_data || '').map((item, index) => ({
-        ...item,
-        reelId: post._linkedReels?.find(link => link.mediaIndex === index)?.id || '',
-        contentKey: `post:${post.id}:media:${index}`
-      })),
+      media: normalizeStoredPostMedia(post.media_items, post.image_data || '').map((item, index) => {
+        const reelId=post._linkedReels?.find(link=>link.mediaIndex===index)?.id||'';
+        if(item.storage==='file')return {type:item.type,mimeType:item.mimeType,size:item.size||0,url:`/api/posts/${encodeURIComponent(String(post.id))}/media/${index}`,reelId,contentKey:`post:${post.id}:media:${index}`};
+        return {...item,reelId,contentKey:`post:${post.id}:media:${index}`};
+      }),
       extras: post.post_extras && typeof post.post_extras === 'object' ? post.post_extras : {}
     } });
   } catch (error) {
@@ -4817,6 +4853,12 @@ app.delete('/api/posts/:postId/comments/:commentId', requireApiAuth, async (requ
     console.error('Post comment delete failed:', error.message);
     response.status(500).json({ error:'Could not delete the comment.' });
   }
+});
+
+app.get('/api/posts/:postId/media/:mediaIndex', requireApiAuth, async (request,response)=>{
+  const postId=request.params.postId,index=Number(request.params.mediaIndex);if(!validNumericId(postId)||!Number.isInteger(index)||index<0)return response.status(400).end();
+  try{await ensureDatabase();const result=await pool.query(`SELECT p.user_id,p.visibility,p.media_items,p.image_data FROM posts p WHERE p.id=$1 LIMIT 1`,[postId]);if(!result.rowCount)return response.status(404).end();const row=result.rows[0];let allowed=String(row.user_id)===String(request.user.id)||row.visibility==='public';if(!allowed&&row.visibility==='friends'){const f=await pool.query(`SELECT 1 FROM friendships WHERE (user_one_id=$1 AND user_two_id=$2) OR (user_one_id=$2 AND user_two_id=$1) LIMIT 1`,[request.user.id,row.user_id]);allowed=f.rowCount>0;}if(!allowed)return response.status(403).end();const media=normalizeStoredPostMedia(row.media_items,row.image_data||''),item=media[index];if(!item)return response.status(404).end();if(item.storage==='file'&&item.fileKey){const absolute=postVideoAbsolute(item.fileKey);if(!absolute||!fs.existsSync(absolute))return response.status(404).end();response.setHeader('Content-Type',item.mimeType||'video/mp4');response.setHeader('Cache-Control','private, max-age=31536000, immutable');response.setHeader('Accept-Ranges','bytes');return response.sendFile(absolute);}const decoded=dataUrlBuffer(item.data,item.type);if(!decoded)return response.status(404).end();return sendBufferRange(request,response,decoded.bytes,decoded.mimeType,'private, max-age=31536000, immutable');}
+  catch(error){console.error('Post media stream failed:',error.message);response.status(500).end();}
 });
 
 app.post('/api/posts/:postId/media/:mediaIndex/like', requireApiAuth, async (request, response) => {
