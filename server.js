@@ -4314,6 +4314,22 @@ app.put('/api/profile', requireApiAuth, async (request, response) => {
 });
 
 app.get('/api/posts', requireApiAuth, async (request, response) => {
+  const requestedLimit = Number.parseInt(String(request.query.limit || '6'), 10);
+  const postLimit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(12, requestedLimit))
+    : 6;
+
+  const requestedUserId = String(request.query.userId || '').trim();
+  const profileUserId = validNumericId(requestedUserId)
+    ? requestedUserId
+    : null;
+
+  const requestedBefore = String(request.query.before || request.query.cursor || '').trim();
+  const beforeCursor =
+    requestedBefore && !Number.isNaN(Date.parse(requestedBefore))
+      ? new Date(requestedBefore).toISOString()
+      : null;
+
   try {
     await ensureDatabase();
     const result = await pool.query(`
