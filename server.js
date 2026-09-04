@@ -4333,26 +4333,31 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
       LEFT JOIN like_counts lc ON lc.post_id = p.id
       LEFT JOIN share_counts sc ON sc.post_id = p.id
       LEFT JOIN my_likes ml ON ml.post_id = p.id
-      WHERE p.user_id = $1
-         OR (
-           p.visibility <> 'only-me'
-           AND (
-             NOT COALESCE(u.account_private, FALSE)
-             OR EXISTS (
-               SELECT 1 FROM friendships f
-               WHERE (f.user_one_id = $1 AND f.user_two_id = p.user_id)
-                  OR (f.user_one_id = p.user_id AND f.user_two_id = $1)
-             )
-           )
-           AND p.id IN (
-             SELECT recent.id FROM posts recent
-             WHERE recent.user_id <> $1
-             ORDER BY recent.created_at DESC
-             LIMIT 50
-           )
-         )
+      WHERE (
+        p.user_id = $1
+        OR (
+          p.visibility <> 'only-me'
+          AND (
+            NOT COALESCE(u.account_private, FALSE)
+            OR EXISTS (
+              SELECT 1 FROM friendships f
+              WHERE (f.user_one_id = $1 AND f.user_two_id = p.user_id)
+                 OR (f.user_one_id = p.user_id AND f.user_two_id = $1)
+            )
+          )
+          AND p.id IN (
+            SELECT recent.id FROM posts recent
+            WHERE recent.user_id <> $1
+            ORDER BY recent.created_at DESC
+            LIMIT 50
+          )
+        )
+      )
+      AND ($3::bigint IS NULL OR p.user_id = $3::bigint)
+      AND ($4::timestamptz IS NULL OR p.created_at < $4::timestamptz)
       ORDER BY p.created_at DESC
-    `, [request.user.id]);
+      LIMIT $2
+    `, [request.user.id, postLimit, profileUserId, beforeCursor]);
     const commentsByPost = new Map();
     if (result.rows.length) {
       const ids = result.rows.map(row => String(row.id));
@@ -4443,7 +4448,10 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
         sourceReelsByPost.get(key).set(Number(row.source_media_index), String(row.id));
       });
     }
-    response.json({ posts: result.rows.map(row => ({
+    const nextCursor = result.rows.length === postLimit
+      ? String(result.rows[result.rows.length - 1].created_at || '')
+      : '';
+    response.json({ nextCursor, posts: result.rows.map(row => ({
       id: String(row.id),
       userId: String(row.user_id),
       body: row.body,
