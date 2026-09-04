@@ -455,6 +455,8 @@ async function ensureDatabase() {
   await pool.query('ALTER TABLE post_comments ADD COLUMN IF NOT EXISTS parent_comment_id BIGINT REFERENCES post_comments(id) ON DELETE CASCADE');
   await pool.query('ALTER TABLE post_comments ADD COLUMN IF NOT EXISTS media_data TEXT');
   await pool.query('ALTER TABLE post_comments ADD COLUMN IF NOT EXISTS media_type VARCHAR(20)');
+  await pool.query('ALTER TABLE post_comments ADD COLUMN IF NOT EXISTS media_storage_key VARCHAR(48)');
+  await pool.query('ALTER TABLE post_comments ADD COLUMN IF NOT EXISTS media_mime_type VARCHAR(100)');
   await pool.query(`
     CREATE TABLE IF NOT EXISTS notifications (
       id BIGSERIAL PRIMARY KEY,
@@ -4552,7 +4554,8 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
       const ids = result.rows.map(row => String(row.id));
       const placeholders = ids.map((_id, index) => `$${index + 1}`).join(',');
       const commentResult = await pool.query(
-        `SELECT pc.id, pc.post_id, pc.user_id, pc.parent_comment_id, pc.body, pc.media_data, pc.media_type, pc.created_at,
+        `SELECT pc.id, pc.post_id, pc.user_id, pc.parent_comment_id, pc.body, pc.media_data, pc.media_type,
+                pc.media_storage_key, pc.media_mime_type, pc.created_at,
                 u.full_name, u.profile_photo, parent_user.full_name AS reply_to_author
          FROM post_comments pc
          JOIN users u ON u.id = pc.user_id
@@ -4573,7 +4576,7 @@ app.get('/api/posts', requireApiAuth, async (request, response) => {
           parentCommentId: row.parent_comment_id ? String(row.parent_comment_id) : null,
           replyToAuthor: row.reply_to_author || '',
           mediaData: row.media_type === 'sticker' ? (row.media_data || '') : '',
-          mediaUrl: row.media_type === 'image' && row.media_data ? `/api/posts/${encodeURIComponent(key)}/comments/${encodeURIComponent(String(row.id))}/media` : '',
+          mediaUrl: row.media_type === 'image' && (row.media_storage_key || row.media_data) ? `/api/posts/${encodeURIComponent(key)}/comments/${encodeURIComponent(String(row.id))}/media` : '',
           mediaType: row.media_type || '',
           body: row.body,
           createdAt: row.created_at
@@ -4932,7 +4935,8 @@ app.get('/api/posts/:postId/comments', requireApiAuth, async (request, response)
     const post = await pool.query('SELECT id FROM posts WHERE id = $1 LIMIT 1', [postId]);
     if (!post.rows[0]) return response.status(404).json({ error: 'Post not found.' });
     const result = await pool.query(
-      `SELECT pc.id, pc.user_id, pc.parent_comment_id, pc.body, pc.media_data, pc.media_type, pc.created_at,
+      `SELECT pc.id, pc.user_id, pc.parent_comment_id, pc.body, pc.media_data, pc.media_type,
+              pc.media_storage_key, pc.media_mime_type, pc.created_at,
               u.full_name, u.profile_photo, parent_user.full_name AS reply_to_author
        FROM post_comments pc
        JOIN users u ON u.id = pc.user_id
@@ -4949,7 +4953,8 @@ app.get('/api/posts/:postId/comments', requireApiAuth, async (request, response)
       profilePhoto: row.profile_photo || '',
       parentCommentId: row.parent_comment_id ? String(row.parent_comment_id) : null,
       replyToAuthor: row.reply_to_author || '',
-      mediaData: row.media_data || '',
+      mediaData: row.media_type === 'sticker' ? (row.media_data || '') : '',
+      mediaUrl: row.media_type === 'image' && (row.media_storage_key || row.media_data) ? `/api/posts/${encodeURIComponent(String(postId))}/comments/${encodeURIComponent(String(row.id))}/media` : '',
       mediaType: row.media_type || '',
       body: row.body,
       createdAt: row.created_at
@@ -4960,7 +4965,32 @@ app.get('/api/posts/:postId/comments', requireApiAuth, async (request, response)
   }
 });
 
-app.get('/api/posts/:postId/comments/:commentId/media',requireApiAuth,async(request,response)=>{const postId=request.params.postId,commentId=request.params.commentId;if(!validNumericId(postId)||!validNumericId(commentId))return response.status(400).end();try{await ensureDatabase();const allowed=await postRowForPrivateAsset(postId,request.user.id);if(allowed===null)return response.status(404).end();if(allowed===false)return response.status(403).end();const found=await pool.query('SELECT media_data,media_type FROM post_comments WHERE id=$1 AND post_id=$2 LIMIT 1',[commentId,postId]);const row=found.rows[0];if(!row||row.media_type!=='image'||!row.media_data)return response.status(404).end();const decoded=dataUrlBuffer(row.media_data,'image');if(!decoded||!decoded.bytes)return response.status(404).end();return sendBufferRange(request,response,decoded.bytes,decoded.mimeType||'image/jpeg','private, max-age=31536000, immutable');}catch(error){console.error('Comment media load failed:',error.message);response.status(500).end();}});
+app.get('/api/posts/:postId/comments/:commentId/media',requireApiAuth,async(request,response)=>{
+  const postId=request.params.postId,commentId=request.params.commentId;
+  if(!validNumericId(postId)||!validNumericId(commentId))return response.status(400).end();
+  try{
+    await ensureDatabase();
+    const allowed=await postRowForPrivateAsset(postId,request.user.id);
+    if(allowed===null)return response.status(404).end();
+    if(allowed===false)return response.status(403).end();
+    const found=await pool.query(
+      'SELECT media_data,media_type,media_storage_key,media_mime_type FROM post_comments WHERE id=$1 AND post_id=$2 LIMIT 1',
+      [commentId,postId]
+    );
+    const row=found.rows[0];
+    if(!row||row.media_type!=='image')return response.status(404).end();
+    const key=safePostStorageKey(row.media_storage_key);
+    if(key)return sendFileRange(request,response,postAssetPath(key),row.media_mime_type||'image/jpeg','private, max-age=31536000, immutable');
+    if(row.media_data){
+      const decoded=dataUrlBuffer(row.media_data,'image');
+      if(decoded&&decoded.bytes)return sendBufferRange(request,response,decoded.bytes,decoded.mimeType||row.media_mime_type||'image/jpeg','private, max-age=31536000, immutable');
+    }
+    response.status(404).end();
+  }catch(error){
+    console.error('Comment media load failed:',error.message);
+    response.status(500).end();
+  }
+});
 
 app.post('/api/posts/:postId/comments', requireApiAuth, async (request, response) => {
   const postId = request.params.postId;
@@ -4982,11 +5012,25 @@ app.post('/api/posts/:postId/comments', requireApiAuth, async (request, response
       if (!parent.rows[0]) return response.status(404).json({ error: 'The comment you replied to was not found.' });
       replyToAuthor = parent.rows[0].full_name || '';
     }
+    let commentMediaData = media.data || null;
+    let commentStorageKey = null;
+    let commentMimeType = null;
+    if (media.type === 'image' && media.data) {
+      const decoded = dataUrlBuffer(media.data, 'image');
+      if (!decoded || !decoded.bytes || !decoded.bytes.length) {
+        return response.status(400).json({ error: 'Choose a valid comment photo.' });
+      }
+      commentStorageKey = writePostAsset(decoded.bytes);
+      commentMimeType = decoded.mimeType || 'image/jpeg';
+      commentMediaData = null;
+    }
+
     const result = await pool.query(
-      `INSERT INTO post_comments (post_id, user_id, parent_comment_id, body, media_data, media_type)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, user_id, parent_comment_id, body, media_data, media_type, created_at`,
-      [postId, request.user.id, parentCommentId, body, media.data || null, media.type || null]
+      `INSERT INTO post_comments
+         (post_id, user_id, parent_comment_id, body, media_data, media_type, media_storage_key, media_mime_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, user_id, parent_comment_id, body, media_data, media_type, media_storage_key, media_mime_type, created_at`,
+      [postId, request.user.id, parentCommentId, body, commentMediaData, media.type || null, commentStorageKey, commentMimeType]
     );
     const comment = result.rows[0];
     const commenter = await pool.query('SELECT profile_photo FROM users WHERE id = $1 LIMIT 1', [request.user.id]);
@@ -4999,7 +5043,10 @@ app.post('/api/posts/:postId/comments', requireApiAuth, async (request, response
       id: String(comment.id), userId: String(comment.user_id), author: request.user.name,
       profilePhoto: commenter.rows[0]?.profile_photo || '',
       parentCommentId: comment.parent_comment_id ? String(comment.parent_comment_id) : null,
-      replyToAuthor, mediaData: comment.media_data || '', mediaType: comment.media_type || '',
+      replyToAuthor,
+      mediaData: comment.media_type === 'sticker' ? (comment.media_data || '') : '',
+      mediaUrl: comment.media_type === 'image' && (comment.media_storage_key || comment.media_data) ? `/api/posts/${encodeURIComponent(String(postId))}/comments/${encodeURIComponent(String(comment.id))}/media` : '',
+      mediaType: comment.media_type || '',
       body: comment.body, createdAt: comment.created_at
     } });
   } catch (error) {
