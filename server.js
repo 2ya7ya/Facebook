@@ -4996,11 +4996,14 @@ app.post('/api/posts/:postId/comments', requireApiAuth, async (request, response
   const postId = request.params.postId;
   const body = String(request.body?.body || '').trim();
   const parentCommentId = request.body?.parentCommentId == null || request.body?.parentCommentId === '' ? null : String(request.body.parentCommentId);
-  const media = normalizeCommentMedia(request.body?.mediaData, request.body?.mediaType);
+  const mediaUploadToken = safePostUploadToken(request.body?.mediaUploadToken);
+  const media = mediaUploadToken
+    ? { data:'', type:'image' }
+    : normalizeCommentMedia(request.body?.mediaData, request.body?.mediaType);
   if (!validNumericId(postId)) return response.status(400).json({ error: 'Invalid post.' });
   if (parentCommentId && !validNumericId(parentCommentId)) return response.status(400).json({ error: 'Invalid reply target.' });
   if (media.error) return response.status(400).json({ error: media.error });
-  if ((!body && !media.data) || body.length > 1000) return response.status(400).json({ error: 'Write a comment or add media.' });
+  if ((!body && !media.data && !mediaUploadToken) || body.length > 1000) return response.status(400).json({ error: 'Write a comment or add media.' });
   try {
     await ensureDatabase();
     let replyToAuthor = '';
@@ -5015,7 +5018,12 @@ app.post('/api/posts/:postId/comments', requireApiAuth, async (request, response
     let commentMediaData = media.data || null;
     let commentStorageKey = null;
     let commentMimeType = null;
-    if (media.type === 'image' && media.data) {
+    if (mediaUploadToken) {
+      const uploaded = consumePostUpload(mediaUploadToken, request.user.id, 'image');
+      commentStorageKey = uploaded.storageKey;
+      commentMimeType = uploaded.mimeType || 'image/jpeg';
+      commentMediaData = null;
+    } else if (media.type === 'image' && media.data) {
       const decoded = dataUrlBuffer(media.data, 'image');
       if (!decoded || !decoded.bytes || !decoded.bytes.length) {
         return response.status(400).json({ error: 'Choose a valid comment photo.' });
