@@ -21,6 +21,7 @@
     "detectincognitojs": "^1.8.0",
     "express": "^5.1.0",
     "ffmpeg-static": "^5.2.0",
+    "firebase-admin": "^14.3.0",
     "pg": "^8.16.3",
     "ws": "^8.18.3"
   }

@@ -9,6 +9,7 @@ const os = require('os');
 const { spawn } = require('child_process');
 const { Readable } = require('stream');
 const { WebSocketServer, WebSocket } = require('ws');
+const firebaseAdmin = require('firebase-admin');
 
 const scrypt = promisify(crypto.scrypt);
 const app = express();
@@ -773,14 +774,149 @@ async function ensureDatabase() {
   }
 }
 
+
+let firebaseMessaging = null;
+
+function getFirebaseMessaging() {
+  if (firebaseMessaging) return firebaseMessaging;
+
+  const raw = String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  if (!raw) return null;
+
+  try {
+    const serviceAccount = JSON.parse(raw);
+
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = String(serviceAccount.private_key).replace(/\\n/g, '\n');
+    }
+
+    if (!firebaseAdmin.apps.length) {
+      firebaseAdmin.initializeApp({
+        credential: firebaseAdmin.credential.cert(serviceAccount)
+      });
+    }
+
+    firebaseMessaging = firebaseAdmin.messaging();
+    return firebaseMessaging;
+  } catch (error) {
+    console.error('Firebase Admin initialization failed:', error.message);
+    return null;
+  }
+}
+
+function notificationPushText(type, actorName) {
+  const actor = actorName || 'Someone';
+
+  if (type === 'post_like') return `${actor} liked your post.`;
+  if (type === 'post_comment') return `${actor} commented on your post.`;
+  if (type === 'mention') return `${actor} mentioned you.`;
+  if (type === 'friend_request') return `${actor} sent you a friend request.`;
+  if (type === 'friend_accept') return `${actor} accepted your friend request.`;
+
+  return `${actor} sent you a notification.`;
+}
+
+async function sendNotificationPush({
+  notificationId,
+  userId,
+  actorId,
+  type,
+  postId = null,
+  commentId = null
+}) {
+  const messaging = getFirebaseMessaging();
+  if (!messaging || !pool) return;
+
+  try {
+    const [tokensResult, actorResult] = await Promise.all([
+      pool.query(
+        'SELECT token FROM fcm_device_tokens WHERE user_id = $1 ORDER BY updated_at DESC',
+        [userId]
+      ),
+      actorId
+        ? pool.query(
+            `SELECT COALESCE(NULLIF(BTRIM(full_name), ''), 'Someone') AS name
+             FROM users
+             WHERE id = $1
+             LIMIT 1`,
+            [actorId]
+          )
+        : Promise.resolve({ rows: [] })
+    ]);
+
+    const tokens = tokensResult.rows
+      .map(row => String(row.token || '').trim())
+      .filter(Boolean);
+
+    if (!tokens.length) return;
+
+    const actorName = actorResult.rows[0]?.name || 'Someone';
+
+    const result = await messaging.sendEachForMulticast({
+      tokens,
+      data: {
+        title: 'FaceTok',
+        body: notificationPushText(type, actorName),
+        type: String(type || ''),
+        notificationId: String(notificationId || ''),
+        actorId: String(actorId || ''),
+        postId: String(postId || ''),
+        commentId: String(commentId || '')
+      },
+      android: {
+        priority: 'high'
+      }
+    });
+
+    const staleTokens = [];
+
+    result.responses.forEach((item, index) => {
+      if (item.success) return;
+
+      const code = String(item.error?.code || '');
+
+      if (
+        code === 'messaging/registration-token-not-registered' ||
+        code === 'messaging/invalid-registration-token'
+      ) {
+        staleTokens.push(tokens[index]);
+      }
+    });
+
+    if (staleTokens.length) {
+      await pool.query(
+        'DELETE FROM fcm_device_tokens WHERE token = ANY($1::text[])',
+        [staleTokens]
+      );
+    }
+  } catch (error) {
+    console.error('Notification push failed:', error.message);
+  }
+}
+
 async function createNotification(client, { userId, actorId, type, postId = null, detail = '', commentId = null }) {
   if (!userId || String(userId) === String(actorId)) return;
-  await client.query(
+
+  const created = await client.query(
     `INSERT INTO notifications (user_id, actor_id, type, post_id, detail, comment_id, read_at, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, NULL, NOW())
-     ON CONFLICT DO NOTHING`,
+     ON CONFLICT DO NOTHING
+     RETURNING id`,
     [userId, actorId || null, type, postId || null, String(detail || '').slice(0, 1000), commentId || null]
   );
+
+  if (!created.rowCount) return;
+
+  sendNotificationPush({
+    notificationId: created.rows[0].id,
+    userId,
+    actorId,
+    type,
+    postId,
+    commentId
+  }).catch(error => {
+    console.error('Notification push scheduling failed:', error.message);
+  });
 }
 
 async function createMentionNotifications(client, actorId, body, postId, commentId = null) {
