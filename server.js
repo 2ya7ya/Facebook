@@ -470,6 +470,19 @@ async function ensureDatabase() {
   `);
   await pool.query('ALTER TABLE notifications ADD COLUMN IF NOT EXISTS detail TEXT');
   await pool.query('ALTER TABLE notifications ADD COLUMN IF NOT EXISTS comment_id BIGINT');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fcm_device_tokens (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(
+    'CREATE INDEX IF NOT EXISTS fcm_device_tokens_user_idx ON fcm_device_tokens (user_id)'
+  );
   await pool.query(`
     CREATE TABLE IF NOT EXISTS post_shares (
       post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -6903,6 +6916,33 @@ app.get('/api/navigation-badges', requireApiAuth, async (request, response) => {
   } catch (error) {
     console.error('Navigation badges load failed:', error.message);
     response.status(500).json({ error: 'Could not load navigation badges.' });
+  }
+});
+
+app.post('/api/notifications/device-token', requireApiAuth, async (request, response) => {
+  const token = String(request.body?.token || '').trim();
+
+  if (token.length < 20 || token.length > 4096) {
+    return response.status(400).json({ error: 'Invalid notification device token.' });
+  }
+
+  try {
+    await ensureDatabase();
+
+    await pool.query(
+      `INSERT INTO fcm_device_tokens (user_id, token, created_at, updated_at)
+       VALUES ($1, $2, NOW(), NOW())
+       ON CONFLICT (token)
+       DO UPDATE SET
+         user_id = EXCLUDED.user_id,
+         updated_at = NOW()`,
+      [request.user.id, token]
+    );
+
+    response.json({ ok: true });
+  } catch (error) {
+    console.error('Notification device token registration failed:', error.message);
+    response.status(500).json({ error: 'Could not register notification device.' });
   }
 });
 
