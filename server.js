@@ -67,7 +67,6 @@ let authDatabaseReadyPromise = null;
 let databaseReady = false;
 let databaseReadyPromise = null;
 let videoBackfillStarted = false;
-let reelThumbnailBackfillStarted = false;
 let userAuthColumns = new Set();
 let legacyPasswordColumn = '';
 let legacyIdentifierColumns = [];
@@ -752,7 +751,6 @@ async function ensureDatabase() {
   `);
     databaseReady = true;
     schedulePostVideoBackfill();
-    scheduleReelThumbnailBackfill();
   })();
   try {
     await databaseReadyPromise;
@@ -787,35 +785,6 @@ async function createMentionNotifications(client, actorId, body, postId, comment
   for (const row of mentioned.rows) {
     await createNotification(client, { userId: row.id, actorId, type: 'mention', postId, detail: text, commentId });
   }
-}
-
-function scheduleReelThumbnailBackfill() {
-  if (reelThumbnailBackfillStarted || !pool) return;
-  reelThumbnailBackfillStarted = true;
-  setTimeout(async () => {
-    try {
-      const result = await pool.query(`
-        SELECT r.id
-          FROM reels r
-         WHERE NOT EXISTS (
-           SELECT 1 FROM reel_thumbnails t WHERE t.reel_id = r.id
-         )
-         ORDER BY r.created_at DESC, r.id DESC
-         LIMIT 24
-      `);
-      for (const row of result.rows) {
-        try {
-          await ensureReelThumbnail(row.id);
-        } catch (error) {
-          console.warn('Reel thumbnail backfill skipped', row.id, error.message);
-        }
-      }
-      if (result.rowCount) console.log(`Reel thumbnail backfill complete: ${result.rowCount}`);
-    } catch (error) {
-      reelThumbnailBackfillStarted = false;
-      console.error('Reel thumbnail backfill failed:', error.message);
-    }
-  }, 2500);
 }
 
 function schedulePostVideoBackfill() {
@@ -892,7 +861,7 @@ async function findUserForLogin(identifier) {
   const legacyNameExpressions = legacyNameColumns.map(column => `NULLIF(BTRIM(${quotedColumn(column)}::text), '')`);
   const fullNameExpression = [`NULLIF(BTRIM(full_name), '')`, ...legacyNameExpressions, `'Facebook user'`].join(', ');
   const result = await pool.query(
-    `SELECT id, COALESCE(${fullNameExpression}) AS full_name, password_hash, deactivated_at, admin_suspended_at, admin_suspended_until${legacyPasswordSelect}
+    `SELECT id, COALESCE(${fullNameExpression}) AS full_name, profile_photo, password_hash, deactivated_at, admin_suspended_at, admin_suspended_until${legacyPasswordSelect}
      FROM users WHERE ${conditions.join(' OR ')} LIMIT 1`,
     [identifier]
   );
@@ -2366,6 +2335,65 @@ app.post('/api/register', async (request, response) => {
     if (error.code === '23505') return response.status(409).json({ error: 'An account already exists for this mobile number or email.' });
     console.error('Registration failed:', error.message);
     response.status(500).json({ error: 'Could not create the account. Try again.' });
+  }
+});
+
+
+app.post('/api/login/identity', async (request, response) => {
+  const identifier = normalizeIdentifier(request.body?.identifier);
+  if (!identifier || identifier.length < 5 || identifier.length > 255) {
+    return response.status(400).json({ exists: false, error: 'Invalid email address' });
+  }
+  try {
+    const user = await withTimeout(
+      findUserForLogin(identifier),
+      12000,
+      'Account lookup took too long.'
+    );
+    if (!user) return response.status(404).json({ exists: false, error: 'Invalid email address' });
+    response.set('Cache-Control', 'no-store');
+    response.json({
+      exists: true,
+      userId: String(user.id),
+      displayName: user.full_name || '',
+      avatarUrl: user.profile_photo ? `/api/login/avatar/${encodeURIComponent(String(user.id))}` : ''
+    });
+  } catch (error) {
+    console.error('Login identity lookup failed:', error.message);
+    response.status(503).json({ error: 'Login is temporarily unavailable.' });
+  }
+});
+
+app.get('/api/login/avatar/:userId', async (request, response) => {
+  const userId = String(request.params.userId || '');
+  if (!/^\d+$/.test(userId)) return response.status(400).end();
+  try {
+    await ensureDatabase();
+    const result = await pool.query('SELECT profile_photo FROM users WHERE id = $1 LIMIT 1', [userId]);
+    const source = String(result.rows[0]?.profile_photo || '');
+    if (!source) return response.status(404).end();
+
+    const fileMatch = source.match(/^\/api\/profile-media-file\/\d+\/profile\/([a-f0-9]{64})$/i);
+    if (fileMatch) {
+      const media = await pool.query(
+        `SELECT mime_type, image_data FROM profile_media_files
+         WHERE user_id = $1 AND media_kind = 'profile' AND media_version = $2 LIMIT 1`,
+        [userId, fileMatch[1]]
+      );
+      if (media.rows[0]) {
+        response.setHeader('Cache-Control', 'private, max-age=60');
+        response.type(media.rows[0].mime_type || 'image/jpeg').send(media.rows[0].image_data);
+        return;
+      }
+    }
+
+    const decoded = dataUrlBuffer(source, 'image');
+    if (!decoded) return response.status(404).end();
+    response.setHeader('Cache-Control', 'private, max-age=60');
+    response.type(decoded.mimeType).send(decoded.bytes);
+  } catch (error) {
+    console.error('Login avatar load failed:', error.message);
+    response.status(500).end();
   }
 });
 
@@ -6057,13 +6085,8 @@ app.get('/api/reels/:reelId/thumbnail', requireApiAuth, async (request,response)
     await ensureDatabase();
     const access=await reelViewerAccess(reelId,request.user.id);if(!access.exists)return response.status(404).end();if(!access.allowed)return response.status(403).end();
     const result=await pool.query('SELECT mime_type,image_data,created_at FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
-    let media=result.rows[0];
-    if(!media){
-      const generated=await ensureReelThumbnail(reelId);
-      if(!generated)return response.status(404).end();
-      const ready=await pool.query('SELECT mime_type,image_data,created_at FROM reel_thumbnails WHERE reel_id=$1 LIMIT 1',[reelId]);
-      media=ready.rows[0]||generated;
-    }
+    const media=result.rows[0];
+    if(!media)return response.status(404).end();
     const createdAt=media.created_at?new Date(media.created_at):null;
     const versionStamp=createdAt&&Number.isFinite(createdAt.getTime())?createdAt.getTime():0;
     const etag=`"reel-thumb-${reelId}-${media.image_data.length}-${versionStamp}"`;
@@ -6202,7 +6225,6 @@ app.put('/api/reel-uploads/:uploadId', requireApiAuth, express.raw({type:['video
       await client.query('DELETE FROM reel_upload_sessions WHERE id=$1',[uploadId]);
       await client.query('COMMIT');
       response.status(201).json({ok:true,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),thumbnailUrl:reelThumbnailUrl(reel.id),hlsReady:false,hls:''}});
-      ensureReelThumbnail(reel.id).catch(error=>console.warn('Reel thumbnail generation failed:',reel.id,error.message));
       ensureReelHls(reel.id).catch(()=>{});
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   }catch(error){console.error('Reel binary upload failed:',error.message);response.status(500).json({error:'Could not upload the Reel. Try again.'});}
@@ -6270,7 +6292,6 @@ app.post('/api/reels', requireApiAuth, async (request, response) => {
     }
     sourceBytes=null;thumbnailBytes=null;
     response.status(201).json({ok:true,processing:false,reel:{...reel,contentKey:`reel:${reel.id}`,video:reelVideoUrl(reel.id,'high'),videoHigh:reelVideoUrl(reel.id,'high'),videoLow:reelVideoUrl(reel.id,'low'),thumbnailUrl:reelThumbnailUrl(reel.id),hlsReady:false,hls:''}});
-    ensureReelThumbnail(reel.id).catch(error=>console.warn('Reel thumbnail generation failed:',reel.id,error.message));
     ensureReelHls(reel.id).catch(()=>{});
   }catch(error){console.error('Reel creation failed:',error);response.status(500).json({error:'Could not publish the reel.'});}
 });
