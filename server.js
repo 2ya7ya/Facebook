@@ -780,7 +780,21 @@ let firebaseMessaging = null;
 function getFirebaseMessaging() {
   if (firebaseMessaging) return firebaseMessaging;
 
-  const raw = String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  let raw = String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+
+  const credentialFile = String(
+    process.env.FIREBASE_SERVICE_ACCOUNT_FILE || ''
+  ).trim();
+
+  if (!raw && credentialFile) {
+    try {
+      raw = fs.readFileSync(credentialFile, 'utf8').trim();
+    } catch (error) {
+      console.error('Firebase credential file read failed:', error.message);
+      return null;
+    }
+  }
+
   if (!raw) return null;
 
   try {
