@@ -9,7 +9,8 @@ const os = require('os');
 const { spawn } = require('child_process');
 const { Readable } = require('stream');
 const { WebSocketServer, WebSocket } = require('ws');
-const firebaseAdmin = require('firebase-admin');
+const { initializeApp, cert, getApps } = require('firebase-admin/app');
+const { getMessaging } = require('firebase-admin/messaging');
 
 const scrypt = promisify(crypto.scrypt);
 const app = express();
@@ -804,13 +805,13 @@ function getFirebaseMessaging() {
       serviceAccount.private_key = String(serviceAccount.private_key).replace(/\\n/g, '\n');
     }
 
-    if (!firebaseAdmin.apps.length) {
-      firebaseAdmin.initializeApp({
-        credential: firebaseAdmin.credential.cert(serviceAccount)
+    if (!getApps().length) {
+      initializeApp({
+        credential: cert(serviceAccount)
       });
     }
 
-    firebaseMessaging = firebaseAdmin.messaging();
+    firebaseMessaging = getMessaging();
     return firebaseMessaging;
   } catch (error) {
     console.error('Firebase Admin initialization failed:', error.message);
