@@ -837,7 +837,8 @@ async function sendNotificationPush({
   actorId,
   type,
   postId = null,
-  commentId = null
+  commentId = null,
+  detail = ''
 }) {
   const messaging = getFirebaseMessaging();
   if (!messaging || !pool) return;
@@ -850,7 +851,9 @@ async function sendNotificationPush({
       ),
       actorId
         ? pool.query(
-            `SELECT COALESCE(NULLIF(BTRIM(full_name), ''), 'Someone') AS name
+            `SELECT
+               COALESCE(NULLIF(BTRIM(full_name), ''), 'Someone') AS name,
+               COALESCE(profile_photo, '') AS profile_photo
              FROM users
              WHERE id = $1
              LIMIT 1`,
@@ -866,17 +869,30 @@ async function sendNotificationPush({
     if (!tokens.length) return;
 
     const actorName = actorResult.rows[0]?.name || 'Someone';
+    const actorProfilePhoto = actorResult.rows[0]?.profile_photo || '';
+    const cleanDetail = String(detail || '').trim().slice(0, 500);
+
+    let pushBody = notificationPushText(type, actorName);
+
+    if (type === 'post_comment' && cleanDetail) {
+      pushBody = `commented on your post: ${cleanDetail}`;
+    } else if (type === 'mention' && cleanDetail) {
+      pushBody = `mentioned you: ${cleanDetail}`;
+    }
 
     const result = await messaging.sendEachForMulticast({
       tokens,
       data: {
-        title: 'FaceTok',
-        body: notificationPushText(type, actorName),
+        title: actorName,
+        body: pushBody,
         type: String(type || ''),
         notificationId: String(notificationId || ''),
         actorId: String(actorId || ''),
+        actorName: String(actorName || ''),
+        actorProfilePhoto: String(actorProfilePhoto || ''),
         postId: String(postId || ''),
-        commentId: String(commentId || '')
+        commentId: String(commentId || ''),
+        detail: cleanDetail
       },
       android: {
         priority: 'high'
@@ -928,7 +944,8 @@ async function createNotification(client, { userId, actorId, type, postId = null
     actorId,
     type,
     postId,
-    commentId
+    commentId,
+    detail
   }).catch(error => {
     console.error('Notification push scheduling failed:', error.message);
   });
