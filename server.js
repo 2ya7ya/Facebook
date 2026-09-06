@@ -844,7 +844,7 @@ async function sendNotificationPush({
   if (!messaging || !pool) return;
 
   try {
-    const [tokensResult, actorResult] = await Promise.all([
+    const [tokensResult, actorResult, postResult] = await Promise.all([
       pool.query(
         'SELECT token FROM fcm_device_tokens WHERE user_id = $1 ORDER BY updated_at DESC',
         [userId]
@@ -858,6 +858,12 @@ async function sendNotificationPush({
              WHERE id = $1
              LIMIT 1`,
             [actorId]
+          )
+        : Promise.resolve({ rows: [] }),
+      postId
+        ? pool.query(
+            `SELECT media_items, post_extras FROM posts WHERE id = $1 LIMIT 1`,
+            [postId]
           )
         : Promise.resolve({ rows: [] })
     ]);
@@ -873,11 +879,37 @@ async function sendNotificationPush({
     const cleanDetail = String(detail || '').trim().slice(0, 500);
 
     let pushBody = notificationPushText(type, actorName);
+    let mediaPreviewUrl = '';
 
     if (type === 'post_comment' && cleanDetail) {
-      pushBody = `commented on your post: ${cleanDetail}`;
+      pushBody = `commented: "${cleanDetail}"`;
     } else if (type === 'mention' && cleanDetail) {
       pushBody = `mentioned you: ${cleanDetail}`;
+    } else if (type === 'post_like' && postId) {
+      const post = postResult.rows[0] || {};
+      const mediaItems = Array.isArray(post.media_items) ? post.media_items : [];
+      const extras = post.post_extras && typeof post.post_extras === 'object' ? post.post_extras : {};
+      const firstMedia = mediaItems[0] || null;
+      if (firstMedia && String(firstMedia.type || '').toLowerCase() === 'image') {
+        pushBody = 'liked your photo';
+        mediaPreviewUrl = `/api/posts/${encodeURIComponent(String(postId))}/media/0`;
+      } else if (firstMedia && String(firstMedia.type || '').toLowerCase() === 'video') {
+        pushBody = 'liked your reel';
+        const reel = await pool.query(
+          `SELECT id FROM reels WHERE source_post_id = $1 AND source_media_index = 0 ORDER BY id DESC LIMIT 1`,
+          [postId]
+        );
+        if (reel.rows[0]?.id) {
+          mediaPreviewUrl = `/api/reels/${encodeURIComponent(String(reel.rows[0].id))}/thumbnail`;
+        }
+      } else {
+        const stickers = Array.isArray(extras.stickers) ? extras.stickers : (extras.sticker ? [extras.sticker] : []);
+        const sticker = String(stickers[0] || '').trim();
+        if (sticker) {
+          pushBody = 'liked your sticker';
+          mediaPreviewUrl = sticker;
+        }
+      }
     }
 
     const result = await messaging.sendEachForMulticast({
@@ -892,7 +924,8 @@ async function sendNotificationPush({
         actorProfilePhoto: String(actorProfilePhoto || ''),
         postId: String(postId || ''),
         commentId: String(commentId || ''),
-        detail: cleanDetail
+        detail: cleanDetail,
+        mediaPreviewUrl: String(mediaPreviewUrl || '')
       },
       android: {
         priority: 'high'
